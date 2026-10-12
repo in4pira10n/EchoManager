@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#1a1a1a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="EchoManager">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <script src="/settings-config.js"></script>
+    <script>
+      try {
+        const preference = localStorage.getItem(window.ECHO_MANAGER_SETTINGS.storageKeys.theme);
+        document.documentElement.dataset.theme = preference === "light" || preference === "dark"
+          ? preference
+          : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      } catch {}
+    </script>
+    <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/assets/favicon-32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/assets/apple-touch-icon.png">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <title>EchoManager</title>
+    <link rel="stylesheet" href="/kit/css/echokit.css">
+    <link rel="stylesheet" href="/app.css">
+    <script defer src="/pwa.js"></script>
+  </head>
+  <body class="echo-root em-app">
+    <div class="em-mode-switch" id="em-mode-switch"></div>
+
+    <main class="em-main">
+      <div class="toast-stack em-toast-stack" id="em-toast-stack" role="status" aria-live="polite" aria-relevant="additions"></div>
+      <section class="em-page" id="em-task-view" aria-label="服务实例">
+        <div class="em-task-list" id="em-task-list" aria-label="已登记的服务实例">
+        </div>
+      </section>
+
+      <section class="em-page" id="em-settings-view" aria-label="管理器设置" data-settings-aria-copy="pageLabel" hidden>
+        <div class="em-settings-list settings-layout">
+          <section class="card settings-panel settings-panel-display em-settings-panel is-expanded" data-settings-panel="appearance">
+            <button class="settings-panel-head settings-panel-toggle em-settings-panel-head" type="button" data-settings-panel-toggle aria-expanded="true" aria-controls="em-settings-appearance-content">
+              <span class="settings-panel-head-icon em-settings-panel-head-icon">
+                <img src="/kit/SFSymbols/sun.min.svg" alt="">
+              </span>
+              <div class="settings-panel-head-copy em-settings-panel-head-copy">
+                <h3 data-settings-copy="appearance.title">颜色与外观</h3>
+                <p data-settings-copy="appearance.description">调整页面的基本显示设置</p>
+              </div>
+              <span class="settings-panel-toggle-icon em-settings-panel-toggle-icon">
+                <img src="/kit/SFSymbols/chevron.down.svg" alt="">
+              </span>
+            </button>
+            <div id="em-settings-appearance-content" class="settings-panel-collapsible-content em-settings-panel-collapsible-content" aria-hidden="false">
+              <div class="em-appearance-fields">
+                <div class="em-appearance-row">
+                  <div class="em-settings-copy">
+                    <h2 data-settings-copy="appearance.themeLabel">颜色主题</h2>
+                    <p data-settings-copy="appearance.themeDescription">选择是否随系统切换深浅色</p>
+                  </div>
+                  <div class="echo-segmented em-theme-segmented" role="group" aria-label="颜色主题" data-settings-aria-copy="appearance.themeLabel">
+                    <button class="echo-segmented__option" type="button" data-em-theme="system" aria-pressed="true">系统</button>
+                    <button class="echo-segmented__option" type="button" data-em-theme="light" aria-pressed="false">浅色</button>
+                    <button class="echo-segmented__option" type="button" data-em-theme="dark" aria-pressed="false">深色</button>
+                  </div>
+                </div>
+                <div class="em-appearance-row em-appearance-row--accent">
+                  <div class="em-settings-copy">
+                    <h2 data-settings-copy="appearance.accentLabel">主色</h2>
+                    <p id="em-accent-description">系统配色方案</p>
+                  </div>
+                  <label class="em-accent-picker" title="选择主色" data-settings-title-copy="appearance.accentPickerTitle">
+                    <input id="em-accent-picker" type="color" aria-label="选择主色" data-settings-aria-copy="appearance.accentPickerLabel">
+                    <span class="em-accent-picker-swatch" aria-hidden="true"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card settings-panel settings-panel-visitor em-settings-panel is-expanded" data-settings-panel="network">
+            <button class="settings-panel-head settings-panel-toggle em-settings-panel-head" type="button" data-settings-panel-toggle aria-expanded="true" aria-controls="em-settings-network-content">
+              <span class="settings-panel-head-icon em-settings-panel-head-icon">
+                <img src="/kit/SFSymbols/network.svg" alt="">
+              </span>
+              <div class="settings-panel-head-copy em-settings-panel-head-copy">
+                <h3 data-settings-copy="network.title">局域网</h3>
+                <p data-settings-copy="network.description">配置通用网络控制</p>
+              </div>
+              <span class="settings-panel-toggle-icon em-settings-panel-toggle-icon">
+                <img src="/kit/SFSymbols/chevron.down.svg" alt="">
+              </span>
+            </button>
+            <div id="em-settings-network-content" class="settings-panel-collapsible-content em-settings-panel-collapsible-content" aria-hidden="false">
+              <div class="em-network-content">
+                  <div class="em-network-heading">
+                  <div class="em-settings-copy">
+                    <h2 data-settings-copy="network.devicesLabel">设备列表</h2>
+                    <p class="em-network-count" id="em-network-count">当前共 0 台设备</p>
+                  </div>
+                </div>
+                  <div class="em-network-device-rail" id="em-network-device-rail" aria-label="局域网设备"></div>
+                <div class="em-network-runtime">
+                  <div class="em-settings-copy"><h2 data-settings-copy="manager.originLabel">访问地址</h2><p id="em-current-origin">—</p></div>
+                  <div class="em-settings-copy"><h2 data-settings-copy="manager.instanceCountLabel">已登记服务</h2><p id="em-instance-count">0 个</p></div>
+                </div>
+                <div id="em-network-add-action"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card settings-panel settings-panel-application em-settings-panel is-expanded" data-settings-panel="about">
+            <button class="settings-panel-head settings-panel-toggle em-settings-panel-head" type="button" data-settings-panel-toggle aria-expanded="true" aria-controls="em-settings-about-content">
+              <span class="settings-panel-head-icon em-settings-panel-head-icon">
+                <img src="/kit/SFSymbols/gear.svg" alt="">
+              </span>
+              <div class="settings-panel-head-copy em-settings-panel-head-copy">
+                <h3 data-settings-copy="about.title">一般</h3>
+                <p data-settings-copy="about.description">通用设置</p>
+              </div>
+              <span class="settings-panel-toggle-icon em-settings-panel-toggle-icon">
+                <img src="/kit/SFSymbols/chevron.down.svg" alt="">
+              </span>
+            </button>
+            <div id="em-settings-about-content" class="settings-panel-collapsible-content em-settings-panel-collapsible-content" aria-hidden="false">
+              <div class="em-general-content">
+                <div class="em-general-version-row">
+                  <div class="em-settings-copy">
+                    <h2 data-settings-copy="about.versionLabel">EchoManager 版本</h2>
+                    <p data-settings-copy="about.version">v0.0.1</p>
+                  </div>
+                  <div id="em-update-action">
+                    <button class="em-settings-action" id="em-check-updates" type="button" data-settings-copy="about.checkUpdates">检查更新</button>
+                  </div>
+                </div>
+                <div class="em-general-extra">
+                  <label class="em-settings-switch" for="em-confirm-stop">
+                    <span><strong data-settings-copy="taskStatus.confirmStopLabel">停止前确认</strong><small data-settings-copy="taskStatus.confirmStopDescription">减少误操作导致的服务中断</small></span>
+                    <input id="em-confirm-stop" type="checkbox">
+                    <span class="em-settings-switch-track" aria-hidden="true"></span>
+                  </label>
+                  <div class="em-account-row">
+                    <div class="em-settings-copy">
+                      <h2 data-settings-copy="about.adminLabel">当前管理员</h2>
+                      <p id="em-current-user"></p>
+                    </div>
+                    <div id="em-logout-action">
+                      <button class="em-settings-action" id="em-logout-button" type="button">退出登录</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div class="em-floating-actions em-floating-actions--left" aria-label="添加实例"><div id="em-add-action"></div></div>
+    <div class="em-floating-actions em-floating-actions--right" id="em-refresh-container" aria-label="刷新任务状态"><div id="em-refresh-action"></div></div>
+    <div id="em-modal-root"></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

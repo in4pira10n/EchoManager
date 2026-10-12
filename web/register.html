@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="color-scheme" content="light dark"><meta name="theme-color" content="#1a1a1a"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="EchoManager"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="mobile-web-app-capable" content="yes"><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/static/assets/favicon.ico" sizes="any"><link rel="icon" type="image/png" sizes="32x32" href="/static/assets/favicon-32.png"><link rel="apple-touch-icon" sizes="180x180" href="/static/assets/apple-touch-icon.png"><title>注册 EchoManager</title><link rel="stylesheet" href="/auth.css"><script defer src="/auth.js"></script><script defer src="/pwa.js"></script></head>
+<body class="register-page" data-auth-page="register">
+<a class="timeline-order-btn" id="register-back-btn" href="/login" aria-label="返回登录" title="返回登录"><img src="/static/assets/back.svg" alt=""></a>
+<main class="auth-screen"><section class="auth-stage" aria-hidden="true"></section><section class="auth-pane" aria-label="注册">
+<div class="auth-brand"><img src="/static/assets/echomanager-icon.png" alt=""><p><strong>注册 EchoManager</strong></p></div>
+<div class="auth-fields"><div class="auth-field"><label for="username">用户名</label><input id="username" autocomplete="username" placeholder="用户名"></div><div class="auth-field"><label for="password">密码</label><input id="password" type="password" autocomplete="new-password" placeholder="至少 6 位"></div><div class="auth-field"><label for="confirm-password">确认密码</label><input id="confirm-password" type="password" autocomplete="new-password" placeholder="再次输入密码"></div></div>
+<div class="auth-error" id="auth-error" role="alert"></div><button class="auth-submit auth-submit-primary" id="auth-submit" type="button">创建管理员账号</button><a class="auth-link" href="/login">已有账号？返回登录</a>
+</section></main>
+<div class="auth-dialog-backdrop" id="admin-auth-modal" hidden>
+<section class="auth-dialog-card" role="dialog" aria-modal="true" aria-labelledby="admin-auth-title">
+<div class="auth-dialog-head"><strong id="admin-auth-title">管理员授权</strong><p>创建管理员账户需要现有管理员输入用户名和密码。</p></div>
+<div class="auth-fields"><div class="auth-field"><input id="admin-username" autocomplete="username" placeholder="管理员用户名" aria-label="管理员用户名"></div><div class="auth-field"><input id="admin-password" type="password" autocomplete="current-password" placeholder="管理员密码" aria-label="管理员密码"></div></div>
+<div class="auth-error" id="admin-auth-error" role="alert"></div>
+<div class="auth-dialog-actions"><button class="auth-dialog-cancel" id="admin-auth-cancel" type="button">取消</button><button class="auth-dialog-confirm" id="admin-auth-confirm" type="button">确认创建</button></div>
+</section>
+</div>
+</body></html>

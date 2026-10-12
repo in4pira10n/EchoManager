@@ -1,0 +1,114 @@
+.setup-init-page {
+  height: auto;
+  min-height: 100svh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: none;
+  touch-action: pan-y;
+  background: var(--auth-bg);
+}
+
+.setup-init-page .login-wrap {
+  min-height: 100svh;
+  padding: 96px 24px 80px;
+  display: grid;
+  place-items: center;
+  background: var(--auth-bg);
+}
+
+.setup-init-page .setup-init-card {
+  width: min(520px, 100%);
+  min-height: 0;
+  display: block;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.setup-init-page .setup-init-panel {
+  width: 100%;
+  padding: 0;
+  display: block;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.setup-init-page .auth-brand {
+  margin: 0 0 38px;
+}
+
+.setup-init-page .auth-brand p { overflow-wrap: anywhere; }
+.setup-init-page .auth-brand b { font-weight: 500; }
+
+.setup-init-page #setup-form {
+  width: min(420px, 100%);
+  margin: 0 auto;
+  padding-bottom: 8px;
+}
+
+.setup-init-page .setup-init-section {
+  margin: 0 0 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.setup-init-page .setup-init-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 9px;
+  color: var(--auth-text);
+  font-size: 14px;
+}
+
+.setup-init-page .setup-init-section-head strong { font-weight: 650; }
+
+.setup-init-page .auth-fields {
+  width: 100%;
+  margin: 0;
+}
+
+.setup-init-page .auth-field input { height: 52px; }
+
+.setup-init-page .setup-desc {
+  margin: 8px 0 0;
+  color: var(--auth-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: .72;
+  overflow-wrap: anywhere;
+}
+
+.setup-init-page #setup-feedback {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.setup-init-page #setup-submit {
+  position: fixed;
+  top: max(36px, env(safe-area-inset-top));
+  right: max(36px, env(safe-area-inset-right));
+  z-index: 20;
+}
+
+@media (max-width: 780px) {
+  .setup-init-page .login-wrap {
+    padding: max(112px, env(safe-area-inset-top) + 88px) 24px max(64px, env(safe-area-inset-bottom));
+    place-items: start center;
+  }
+
+  .setup-init-page .setup-init-card { width: 100%; }
+
+  .setup-init-page #setup-submit {
+    top: max(24px, env(safe-area-inset-top));
+    right: max(24px, env(safe-area-inset-right));
+  }
+}

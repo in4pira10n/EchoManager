@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "EchoManager",
+  "short_name": "EchoManager",
+  "description": "在局域网中管理服务进程。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1a1a1a",
+  "theme_color": "#34c759",
+  "orientation": "any",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/static/assets/pwa-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/assets/echomanager-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

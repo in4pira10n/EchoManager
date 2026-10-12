@@ -1,0 +1,74 @@
+# Local builds and release packages. Keep rsrc_windows_amd64.syso: it embeds
+# the Windows application icon and is required for reproducible cross-builds.
+/EchoManager
+/EchoManager.exe
+*.exe
+*.zip
+*.tar.gz
+/build/
+/dist/
+/.build/
+/target/
+*.test
+coverage.out
+coverage-*.out
+*.prof
+
+# Local runtime configuration and secrets
+/config.json
+.env
+.env.*
+!.env.example
+*.local
+*.local.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Runtime state can contain account hashes, sessions, managed task details,
+# encrypted device credentials, logs, and user-uploaded task icons.
+**/users.json
+**/sessions.json
+**/instances.json
+**/device-secrets.key
+**/*-remote-debug.log
+/data/
+/runtime/
+/state/
+/logs/
+/icons/
+/.echomanager/
+
+# Browser automation output and local visual reviews
+/.playwright-cli/
+/output/
+
+# Local-only product notes
+/要求.md
+
+# Go workspace files are machine-local for this standalone module
+go.work
+go.work.sum
+
+# Logs, temporary files, and editor backups
+*.log
+*.tmp
+*.temp
+*.swp
+*~
+
+# Operating system metadata
+.DS_Store
+**/.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
+# Editors and package-manager caches
+.idea/
+.vscode/
+node_modules/
+.npm/
