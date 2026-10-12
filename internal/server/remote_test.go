@@ -125,6 +125,46 @@ func TestRemoteScriptsAdoptChangedProcessIdentityWithPortOwnershipCheck(t *testi
 	}
 }
 
+func TestRemoteScriptsAdoptUniquePortOwnerWithoutPreviousMetadata(t *testing.T) {
+	instance := Instance{ID: "instance-1", ExecutablePath: `C:\Apps\EchoGallery\EchoGallery.exe`, ConfiguredPort: 8080}
+	for name, script := range map[string]string{
+		"Unix start":  unixStartScript(instance),
+		"Unix status": unixStatusScript(instance),
+		"Unix stop":   unixStopScript(instance),
+	} {
+		if !strings.Contains(script, `if adopted=$(adopt_port_listener); then`) {
+			t.Errorf("%s does not attempt port-owner adoption when metadata is absent", name)
+		}
+	}
+	for name, script := range map[string]string{
+		"Windows start":  windowsStartScript(instance),
+		"Windows status": windowsStatusScript(instance),
+		"Windows stop":   windowsStopScript(instance),
+	} {
+		if !strings.Contains(script, "Adopt-ManagerProcess ([pscustomobject]@{})") {
+			t.Errorf("%s does not attempt port-owner adoption when metadata is absent", name)
+		}
+	}
+}
+
+func TestRemoteStopConfirmationTakesPrecedenceOverSSHExitError(t *testing.T) {
+	commandErr := errors.New("SSH 远程命令失败（退出代码 255）：unexpected EOF")
+	confirmed, stale, resultErr := remoteStopResult("diagnostic output\n__EM_STOPPED__\n", commandErr)
+	if !confirmed || stale || resultErr != nil {
+		t.Fatalf("explicit stopped marker should win over a late SSH error: confirmed=%t stale=%t err=%v", confirmed, stale, resultErr)
+	}
+
+	confirmed, stale, resultErr = remoteStopResult("__EM_STOPPED__|unexpected\n", commandErr)
+	if confirmed || stale || resultErr == nil || !strings.Contains(resultErr.Error(), "255") || !strings.Contains(resultErr.Error(), "停止确认") {
+		t.Fatalf("missing exact confirmation should preserve the SSH error code: confirmed=%t stale=%t err=%v", confirmed, stale, resultErr)
+	}
+
+	confirmed, stale, resultErr = remoteStopResult("__EM_STALE__\n__EM_STOPPED__\n", commandErr)
+	if confirmed || !stale || resultErr == nil {
+		t.Fatalf("stale identity must take precedence over stopped marker: confirmed=%t stale=%t err=%v", confirmed, stale, resultErr)
+	}
+}
+
 func TestUnixRemoteScriptsPassShellSyntaxCheck(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires a POSIX shell")

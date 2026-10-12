@@ -139,10 +139,10 @@ html[data-theme="light"] .em-task-empty-state img { filter: brightness(0); }
   min-width: 220px;
   max-width: 360px;
   padding: 12px 16px;
-  border: 1px solid color-mix(in srgb, var(--em-border) 68%, rgba(255, 255, 255, .36));
+  border: 1px solid var(--em-border);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--em-card) 72%, transparent);
-  color: #ffffff;
+  background: color-mix(in srgb, var(--em-card) 88%, var(--em-canvas));
+  color: var(--em-text);
   box-shadow: 0 18px 42px rgba(0, 0, 0, .16), inset 0 1px 0 rgba(255, 255, 255, .26);
   -webkit-backdrop-filter: blur(22px) saturate(170%);
   backdrop-filter: blur(22px) saturate(170%);
@@ -154,10 +154,10 @@ html[data-theme="light"] .em-task-empty-state img { filter: brightness(0); }
 }
 .em-toast.show { opacity: 1; transform: translateY(0); }
 html[data-theme="light"] .em-toast {
-  border-color: rgba(255, 255, 255, .14);
-  background: rgba(38, 38, 40, .94);
-  color: #ffffff;
-  box-shadow: 0 18px 42px rgba(0, 0, 0, .22), inset 0 1px 0 rgba(255, 255, 255, .1);
+  border-color: rgba(60, 60, 67, .14);
+  background: color-mix(in srgb, #ffffff 92%, var(--em-canvas));
+  color: var(--em-text);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, .12), inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 
 .echo-library-card.em-task-card, .echo-library-card.em-task-card.active {
@@ -196,6 +196,17 @@ html[data-theme="light"] .em-toast {
   --card: var(--em-task-card-running);
   background: var(--em-task-card-running);
 }
+.echo-library-card.em-task-card[role="button"]:hover:not(.is-unavailable),
+.echo-library-card.em-task-card.active[role="button"]:hover:not(.is-unavailable) {
+  background: color-mix(in srgb, var(--em-muted) 22%, var(--card));
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .14);
+  transform: translateY(-1px);
+}
+.em-task-list--reordering { touch-action: none; }
+.em-task-card.dragging { opacity: .58; cursor: grabbing; }
+.em-task-card.drag-over { box-shadow: 0 14px 38px rgba(0, 0, 0, .18); }
+.em-task-card[draggable="true"] { cursor: grab; }
+.em-task-card .echo-library-card__logo img { -webkit-user-drag: none; }
 .echo-library-card.em-task-card .echo-library-card__main { gap: 20px; min-width: 0; }
 .echo-library-card.em-task-card .echo-library-card__logo { border-radius: 50%; box-shadow: none; }
 .echo-library-card.em-task-card .echo-library-card__logo.em-task-logo-editable { cursor: pointer; transition: transform .18s ease; }

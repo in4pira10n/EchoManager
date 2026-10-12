@@ -1,5 +1,5 @@
 {
   "port": "3000",
   "echokit_dir": "../EchoKit",
-  "data_dir": ""
+  "data_dir": ".echomanager-data"
 }

@@ -14,6 +14,7 @@ const MANAGER_PREFERENCES_KEY = SETTINGS_CONFIG.storageKeys.managerPreferences;
 const SETTINGS_PANELS_KEY = SETTINGS_CONFIG.storageKeys.settingsPanels;
 const ACCENT_PREFERENCE_KEY = SETTINGS_CONFIG.storageKeys.accentColor;
 const DEFAULT_ACCENT_COLOR = SETTINGS_CONFIG.defaults.accentColor;
+let accentPersistTimer = 0;
 
 function loadAccentPreference() {
   try {
@@ -53,7 +54,7 @@ function persistSettingsPanelState() {
   try { localStorage.setItem(SETTINGS_PANELS_KEY, JSON.stringify(state.settingsPanels)); } catch {}
 }
 
-const state = { instances: [], signature: "", devices: [], deviceSignature: "", activeId: "", expandedInstanceIds: new Set(), pendingActions: new Map(), runtimeTimer: null, currentView: 0, theme: SETTINGS_CONFIG.defaults.theme, accentColor: loadAccentPreference(), currentUser: "", modal: null, deleteModal: null, stopConfirmModal: null, logoutModal: null, managerShutdownModal: null, cropModal: null, cropCleanup: null, deviceModal: null, deviceDeleteModal: null, iconSources: new Map(), preferences: loadManagerPreferences(), settingsPanels: loadSettingsPanelState(), refreshing: false };
+const state = { instances: [], signature: "", devices: [], deviceSignature: "", activeId: "", expandedInstanceIds: new Set(), pendingActions: new Map(), runtimeTimer: null, currentView: 0, theme: SETTINGS_CONFIG.defaults.theme, accentColor: loadAccentPreference(), currentUser: "", modal: null, deleteModal: null, stopConfirmModal: null, logoutModal: null, managerShutdownModal: null, cropModal: null, cropCleanup: null, deviceModal: null, deviceDeleteModal: null, iconSources: new Map(), preferences: loadManagerPreferences(), settingsPanels: loadSettingsPanelState(), refreshing: false, draggingInstanceId: "", touchReorder: null, suppressCardClick: false };
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 function showFeedback(message, kind = "info") {
@@ -125,7 +126,10 @@ function cardActions(instance) {
   const actions = document.createElement("div");
   actions.className = "em-task-actions echo-modal__footer";
   const processOwned = instance.pid > 0;
-  const isActive = processOwned || ["starting", "running", "stopping"].includes(instance.status);
+  const isRemoteInstance = instance.deviceId && instance.deviceId !== "local";
+  const remoteMayBeAdopted = isRemoteInstance && ["running", "exception"].includes(instance.status);
+  const isActive = processOwned || ["starting", "running", "stopping"].includes(instance.status)
+    || (isRemoteInstance && instance.status === "exception");
   const action = isActive ? "stop" : "start";
   const actionBusy = state.pendingActions.get(instance.id) === action
     || instance.status === "stopping"
@@ -136,7 +140,7 @@ function cardActions(instance) {
       label: action === "stop" ? "停止" : "启动",
       color: action === "stop" ? "red" : "blue",
       className: `em-task-action em-task-action--${action}`,
-      disabled: actionBusy || (action === "start" ? instance.status === "unavailable" : !processOwned),
+      disabled: actionBusy || (action === "start" ? instance.status === "unavailable" : !processOwned && !remoteMayBeAdopted),
       onClick: (event) => runAction(instance, action, event),
     }),
     makeIconButton({
@@ -309,10 +313,123 @@ function openInstancePage(instance) {
   window.open(`${protocol}//${host}:${instance.actualPort || instance.configuredPort}`, "_blank", "noopener,noreferrer");
 }
 
+function beginTaskReorder(instanceID, card) {
+  if (state.draggingInstanceId) return;
+  state.draggingInstanceId = instanceID;
+  taskList.classList.add("em-task-list--reordering");
+  card.classList.add("dragging");
+  state.signature = "";
+}
+
+function moveTaskCardAtPoint(card, clientX, clientY) {
+  const target = document.elementFromPoint(clientX, clientY)?.closest(".em-task-card")
+    || document.elementFromPoint(window.innerWidth / 2, clientY)?.closest(".em-task-card");
+  if (!target || target === card || target.parentElement !== taskList) return;
+  taskList.querySelectorAll(".drag-over").forEach((item) => item.classList.remove("drag-over"));
+  target.classList.add("drag-over");
+  const insertBefore = clientY < target.getBoundingClientRect().top + target.offsetHeight / 2
+    ? target
+    : target.nextElementSibling;
+  taskList.insertBefore(card, insertBefore);
+}
+
+function finishTaskReorder(card, instanceID) {
+  if (state.draggingInstanceId !== instanceID) return;
+  state.draggingInstanceId = "";
+  state.touchReorder = null;
+  taskList.classList.remove("em-task-list--reordering");
+  taskList.querySelectorAll(".drag-over").forEach((item) => item.classList.remove("drag-over"));
+  card?.classList.remove("dragging");
+
+  const ids = [...taskList.querySelectorAll(".em-task-card")].map((item) => item.dataset.instanceId);
+  const currentIds = state.instances.map((instance) => instance.id);
+  if (ids.length !== currentIds.length || ids.some((id) => !id)) {
+    state.signature = "";
+    renderInstances(state.instances);
+    return;
+  }
+  const byID = new Map(state.instances.map((instance) => [instance.id, instance]));
+  state.instances = ids.map((id) => byID.get(id)).filter(Boolean);
+  state.signature = "";
+  renderInstances(state.instances);
+  if (ids.every((id, index) => id === currentIds[index])) return;
+
+  state.suppressCardClick = true;
+  window.setTimeout(() => { state.suppressCardClick = false; }, 500);
+  void api("/api/instances/order", { method: "PUT", body: JSON.stringify({ ids }) })
+    .then((result) => {
+      state.instances = result.instances || state.instances;
+      renderInstances(state.instances);
+    })
+    .catch((error) => {
+      showFeedback(error.message || "任务顺序保存失败。", "error");
+      void refreshInstances(true);
+    });
+}
+
+function installTaskReordering(card, instance) {
+  card.addEventListener("dragover", (event) => {
+    if (!state.draggingInstanceId || state.draggingInstanceId === instance.id) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    moveTaskCardAtPoint(card, event.clientX, event.clientY);
+  });
+  card.addEventListener("drop", (event) => {
+    if (!state.draggingInstanceId) return;
+    event.preventDefault();
+    moveTaskCardAtPoint(card, event.clientX, event.clientY);
+  });
+
+  card.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 1 || event.target.closest("button, input, a, .echo-library-card__logo, .em-task-details")) return;
+    const touch = event.touches[0];
+    const pending = { id: instance.id, card, x: touch.clientX, y: touch.clientY, active: false, timer: 0 };
+    state.touchReorder = pending;
+    pending.timer = window.setTimeout(() => {
+      if (state.touchReorder !== pending) return;
+      pending.active = true;
+      beginTaskReorder(instance.id, card);
+    }, 280);
+  }, { passive: true });
+  card.addEventListener("touchmove", (event) => {
+    const pending = state.touchReorder;
+    if (!pending) return;
+    if (!pending.active) {
+      const touch = event.touches[0];
+      if (!touch || Math.hypot(touch.clientX - pending.x, touch.clientY - pending.y) > 10) {
+        window.clearTimeout(pending.timer);
+        state.touchReorder = null;
+      }
+      return;
+    }
+    event.preventDefault();
+    const touch = event.touches[0];
+    if (touch) moveTaskCardAtPoint(card, touch.clientX, touch.clientY);
+  }, { passive: false });
+  const finishTouchReorder = () => {
+    const pending = state.touchReorder;
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    if (!pending.active) {
+      state.touchReorder = null;
+      return;
+    }
+    state.suppressCardClick = true;
+    window.setTimeout(() => { state.suppressCardClick = false; }, 500);
+    finishTaskReorder(card, instance.id);
+  };
+  card.addEventListener("touchend", finishTouchReorder, { passive: false });
+  card.addEventListener("touchcancel", finishTouchReorder, { passive: false });
+}
+
 function renderInstances(instances) {
   $("#em-current-origin").textContent = window.location.origin;
   $("#em-instance-count").textContent = `${instances.length}${SETTINGS_CONFIG.copy.manager.instanceCountSuffix}`;
   const signature = instanceRenderSignature(instances);
+  if (state.draggingInstanceId) {
+    state.signature = "";
+    return;
+  }
   if (signature === state.signature) return;
   state.signature = signature;
   taskList.replaceChildren();
@@ -348,7 +465,25 @@ function renderInstances(instances) {
       content: [() => cardActions(instance)],
       active: state.activeId === instance.id,
       available: instance.status !== "unavailable",
+      draggable: true,
+      onDragStart: (event, draggedCard) => {
+        if (event.target.closest("button, input, .echo-library-card__logo, .em-task-details")) {
+          event.preventDefault();
+          draggedCard.classList.remove("dragging");
+          return;
+        }
+        beginTaskReorder(instance.id, draggedCard);
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", instance.id);
+        }
+      },
+      onDragEnd: (event, draggedCard) => finishTaskReorder(draggedCard, instance.id),
       onClick: (event) => {
+        if (state.suppressCardClick) {
+          event.preventDefault();
+          return;
+        }
         if (event.target.closest("button, .em-task-details")) return;
         state.activeId = instance.id;
         taskList.querySelectorAll(".em-task-card").forEach((itemCard) => {
@@ -371,6 +506,7 @@ function renderInstances(instances) {
       : ["starting", "stopping"].includes(instance.status) ? "starting" : "stopped";
     card.classList.add(`em-task-card--${cardState}`);
     card.dataset.instanceId = instance.id;
+    installTaskReordering(card, instance);
     const detailsExpanded = state.expandedInstanceIds.has(instance.id);
     card.classList.toggle("is-expanded", detailsExpanded);
     card.setAttribute("aria-expanded", String(detailsExpanded));
@@ -1618,7 +1754,7 @@ function setTheme(preference) {
   try { localStorage.setItem(SETTINGS_CONFIG.storageKeys.theme, state.theme); } catch {}
 }
 
-function setAccentColor(value) {
+function setAccentColor(value, { persist = true } = {}) {
   if (!/^#[0-9a-f]{6}$/i.test(value)) return;
   state.accentColor = value.toLowerCase();
   const root = document.documentElement;
@@ -1633,6 +1769,25 @@ function setAccentColor(value) {
     ? SETTINGS_CONFIG.appearance.systemAccentDescription
     : SETTINGS_CONFIG.appearance.customAccentDescription;
   try { localStorage.setItem(ACCENT_PREFERENCE_KEY, state.accentColor); } catch {}
+  if (!persist) return;
+  window.clearTimeout(accentPersistTimer);
+  accentPersistTimer = window.setTimeout(() => {
+    void api("/api/settings", { method: "PUT", body: JSON.stringify({ accentColor: state.accentColor }) })
+      .catch((error) => showFeedback(`主色保存失败：${error.message}`, "error"));
+  }, 300);
+}
+
+async function loadPersistentAccentColor() {
+  try {
+    const response = await api("/api/settings");
+    if (response.initialized) {
+      setAccentColor(response.settings?.accentColor || DEFAULT_ACCENT_COLOR, { persist: false });
+      return;
+    }
+    await api("/api/settings", { method: "PUT", body: JSON.stringify({ accentColor: state.accentColor }) });
+  } catch (error) {
+    showFeedback(`无法读取已保存的主色：${error.message}`, "error");
+  }
 }
 
 function initTheme() {
@@ -1642,7 +1797,7 @@ function initTheme() {
     if (SETTINGS_CONFIG.appearance.themeOptions.some((option) => option.id === saved)) preference = saved;
   } catch {}
   setTheme(preference);
-  setAccentColor(state.accentColor);
+  setAccentColor(state.accentColor, { persist: false });
   systemTheme.addEventListener("change", () => {
     if (state.theme === "system") setTheme("system");
   });
@@ -1745,6 +1900,7 @@ document.addEventListener("touchmove", (event) => {
 applySettingsConfig();
 initializeSettingsPanels();
 initTheme();
+void loadPersistentAccentColor();
 initManagerPreferences();
 $("#em-logout-button").addEventListener("click", (event) => openLogoutConfirmation(event.currentTarget));
 api("/api/auth/session").then((user) => { state.currentUser = user.username; $("#em-current-user").textContent = user.username; }).catch(() => {});

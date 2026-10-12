@@ -64,7 +64,7 @@ $env:PORT = "3000"
 go run .
 ```
 
-Open `http://127.0.0.1:3000`. On first run, complete initialization and create the first administrator account. The manager defaults to port `3000`; set `PORT` to change it. At startup, the console prints the local URL, a LAN URL when available, the data directory, and the configuration file path.
+Open `http://127.0.0.1:3000`. On first run, complete initialization and create the first administrator account. The manager defaults to port `3000`; set `PORT` to change it. When run from a terminal, startup diagnostics (including local/LAN URLs, data directory, and configuration path) are printed there. The quiet Windows desktop build does not open a console; its diagnostics are written to `logs/manager.log` under the configured data directory.
 
 ## Build
 
@@ -82,13 +82,19 @@ mkdir -p dist
 GOOS=windows GOARCH=amd64 go build -o dist/EchoManager-windows-amd64.exe .
 ```
 
-The built executable can be launched from any working directory; its EchoManager web interface and its own static assets are embedded. EchoKit is not embedded and must remain available through the default lookup locations or `ECHOKIT_DIR`.
+For a quiet Windows desktop launch, build with the GUI subsystem flag so no console window appears:
+
+```sh
+GOOS=windows GOARCH=amd64 go build -ldflags="-H=windowsgui" -o dist/EchoManager-windows-amd64.exe .
+```
+
+The quiet Windows desktop build starts as a background service and does not open a console or browser window. Local and LAN addresses and runtime diagnostics are written to `logs/manager.log` under the configured EchoManager data directory; open the local address from an existing browser when needed. The built executable can be launched from any working directory; its web interface and static assets are embedded. EchoKit is not embedded and must remain available through the default lookup locations or `ECHOKIT_DIR`.
 
 ## Application Icons
 
-The canonical macOS icon is `assets/icons/AppIcon.icns`. The browser favicon (`web/static/assets/favicon.ico`), PNG page/app marks, and the Windows amd64 executable resource are generated from this same icon. The root-level `rsrc_windows_amd64.syso` is automatically linked by Go when building for Windows amd64, so the executable carries the application icon as well as the browser having its favicon. `AppIcon.icns` is ready to place in a macOS app bundle's `Contents/Resources` directory under that name.
+The canonical EchoManager brand icon is `assets/icons/EchoManager.png`. The browser favicon (`web/static/assets/favicon.ico`), PWA icons, page/app marks, macOS ICNS, and Windows amd64 executable resource are generated from this image. The root-level `rsrc_windows_amd64.syso` is automatically linked by Go when building for Windows amd64, so the executable carries the same application icon. `AppIcon.icns` is ready to place in a macOS app bundle's `Contents/Resources` directory under that name.
 
-To regenerate the derived icon assets on macOS, install the optional Python dependency with `python3 -m pip install -r scripts/requirements-icons.txt`, then run `sh scripts/generate-icons.sh`. This requires Apple's `sips`, Go, Python 3, and Pillow. Windows cross-builds use the committed `.syso` resource and do not need `rsrc` at build time.
+To regenerate the derived icon assets, install the optional Python dependency with `python3 -m pip install -r scripts/requirements-icons.txt`, then run `sh scripts/generate-icons.sh`. This requires Go, Python 3, Pillow, and network access for `rsrc`; macOS also uses `iconutil` to rebuild `AppIcon.icns`. The original image framing is preserved; exports are only downsampled to the standard platform sizes. Windows cross-builds use the committed `.syso` resource and do not need `rsrc` at build time.
 
 ## Devices and Remote Instances
 
@@ -113,7 +119,7 @@ An instance's executable path, arguments, environment, and configured service po
 
 ## Data and Configuration
 
-Unless `data_dir` in `config.json` or `ECHOMANAGER_DATA_DIR` is set, persistent data is stored in Go's per-user configuration directory under `EchoManager`. The directory contains:
+Unless `data_dir` in `config.json` or `ECHOMANAGER_DATA_DIR` is set, portable data is stored in `.echomanager-data` beside the EchoManager executable (when running from source, beside the project). The directory contains:
 
 - `instances.json` — registered instance configuration and the latest saved state.
 - `instances.json` also contains registered device connection metadata. Device passwords are encrypted and are not written in plaintext.
@@ -122,8 +128,9 @@ Unless `data_dir` in `config.json` or `ECHOMANAGER_DATA_DIR` is set, persistent 
 - `sessions.json` — active browser sessions and their seven-day expiration times; logging out removes the session.
 - `logs/` — per-instance process output and error logs.
 - `icons/` — uploaded instance icons.
+- `settings.json` — shared application preferences, including the accent color.
 
-Set `data_dir` in `config.json` or `ECHOMANAGER_DATA_DIR` to choose a different location. This data is outside the source tree by default and should not be committed. Existing `control.token` files are no longer read or used. Authentication is provided by the administrator login; there is no separate LAN control token.
+On first launch after upgrading, EchoManager copies the previous per-user `EchoManager` data directory into `.echomanager-data` if the new directory does not exist. The old directory is left untouched. Keep the data folder with the executable when moving the app to another computer; the target's executable paths and device credentials still need to be valid there. The executable's containing folder must be writable, or configure `data_dir` / `ECHOMANAGER_DATA_DIR` to a writable location. Set either option to choose a different data location. Runtime data should not be committed. Existing `control.token` files are no longer read or used. Authentication is provided by the administrator login; there is no separate LAN control token.
 
 ## Security Notes
 
@@ -131,9 +138,9 @@ The HTTP server listens on all network interfaces so that LAN access is possible
 
 The built-in server uses plain HTTP. Do not expose it directly to the public internet or an untrusted network. Use EchoManager only on a trusted network with appropriate host firewall rules, and protect the manager data directory.
 
-When stopping a process, EchoManager targets only the process it started (and its process tree where supported). It does not kill unrelated applications based only on a port number. On Unix-like systems it first requests graceful termination and then escalates if needed; Windows uses the operating system's `taskkill` utility.
+On refresh, EchoManager can adopt a locally started process only when its configured port has one listener, that listener's executable path matches the task, and a stable process-start identity can be read. Ambiguous or inaccessible processes are reported but not controlled. Before stopping an adopted process, EchoManager rechecks its PID, executable path, and start identity; it never stops a process based only on a matching port. Manager-launched processes retain their process-tree handling. Unix-like adopted processes receive `SIGTERM` and then `SIGKILL` if needed; Windows uses hidden `taskkill` invocations with a timeout.
 
-Closing EchoManager stops its web service but leaves managed processes running. Start EchoManager again to resume management; processes still listening after restart are reported for manual verification rather than being adopted automatically.
+Closing EchoManager stops its web service but leaves managed processes running. Start EchoManager again and refresh task status to revalidate and adopt matching local or remote processes.
 
 ## Development Checks
 
@@ -146,7 +153,7 @@ go build ./...
 Cross-compile without attempting to run the foreign executable:
 
 ```sh
-GOOS=windows GOARCH=amd64 go build ./...
+GOOS=windows GOARCH=amd64 go build -ldflags="-H=windowsgui" ./...
 GOOS=linux GOARCH=amd64 go build ./...
 ```
 

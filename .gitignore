@@ -41,6 +41,8 @@ id_ed25519*
 /logs/
 /icons/
 /.echomanager/
+/.echomanager-data/
+**/.echomanager-data/
 
 # Browser automation output and local visual reviews
 /.playwright-cli/

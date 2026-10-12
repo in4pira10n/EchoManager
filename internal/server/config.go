@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,7 @@ const (
 	envEchoKitDir            = "ECHOKIT_DIR"
 	envManagerPort           = "PORT"
 	envManagerDataDir        = "ECHOMANAGER_DATA_DIR"
-	managerDataDirectoryName = "EchoManager"
+	managerDataDirectoryName = ".echomanager-data"
 )
 
 type appConfig struct {
@@ -108,10 +109,11 @@ func loadAppConfigAt(configPath, executablePath, workingDir string, lookupEnv fu
 		kitDir = filepath.Join(base, kitDir)
 	}
 
-	dataDir := configuredValue(lookupEnv, envManagerDataDir, fileConfig.DataDir)
+	configuredDataDir := configuredValue(lookupEnv, envManagerDataDir, fileConfig.DataDir)
+	dataDir := configuredDataDir
 	if dataDir == "" {
 		var err error
-		dataDir, err = defaultManagerDataDir()
+		dataDir, err = defaultManagerDataDir(executablePath, configPath, workingDir)
 		if err != nil {
 			return appConfig{}, err
 		}
@@ -182,12 +184,110 @@ func configuredValue(lookupEnv func(string) (string, bool), key, fallback string
 	return strings.TrimSpace(fallback)
 }
 
-func defaultManagerDataDir() (string, error) {
+func defaultManagerDataDir(executablePath, configPath, workingDir string) (string, error) {
+	programDir := filepath.Dir(executablePath)
+	if workingDir != "" {
+		if _, err := os.Stat(filepath.Join(workingDir, "go.mod")); err == nil {
+			programDir = workingDir
+		}
+	}
+	if programDir == "." || programDir == "" {
+		programDir = filepath.Dir(configPath)
+	}
+	dataDir := filepath.Join(programDir, managerDataDirectoryName)
+	legacyDir, legacyErr := legacyManagerDataDir()
+	if legacyErr != nil {
+		return "", legacyErr
+	}
+	if err := migrateLegacyManagerDataDir(legacyDir, dataDir); err != nil {
+		return "", err
+	}
+	return ensureDataDirectory(dataDir)
+}
+
+func migrateLegacyManagerDataDir(legacyDir, destination string) error {
+	if filepath.Clean(legacyDir) == filepath.Clean(destination) {
+		return nil
+	}
+	if _, err := os.Stat(destination); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Stat(legacyDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := copyDataDirectory(legacyDir, destination); err != nil {
+		return fmt.Errorf("migrate existing EchoManager data to %s: %w", destination, err)
+	}
+	return nil
+}
+
+func legacyManagerDataDir() (string, error) {
 	root, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return ensureDataDirectory(filepath.Join(root, managerDataDirectoryName))
+	return filepath.Join(root, "EchoManager"), nil
+}
+
+func copyDataDirectory(source, destination string) error {
+	temporary, err := os.MkdirTemp(filepath.Dir(destination), ".echomanager-data-migrate-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(temporary)
+	err = filepath.WalkDir(source, func(sourcePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, sourcePath)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		target := filepath.Join(temporary, relative)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		input, err := os.Open(sourcePath)
+		if err != nil {
+			return err
+		}
+		defer input.Close()
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(output, input)
+		closeErr := output.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, destination); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func ensureDataDirectory(path string) (string, error) {

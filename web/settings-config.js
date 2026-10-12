@@ -57,7 +57,7 @@ window.ECHO_MANAGER_SETTINGS = {
       title: "一般",
       description: "通用设置",
       versionLabel: "EchoManager 版本",
-      version: "v0.0.1",
+      version: "v0.0.2",
       checkUpdates: "检查更新",
       adminLabel: "当前管理员",
     },

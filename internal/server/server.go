@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -16,13 +17,23 @@ import (
 )
 
 var embeddedAppAssets = web.Files()
+var managerLogFile *os.File
 
 func Run() {
+	configureManagerLog("")
 	config, err := loadAppConfig()
 	if err != nil {
 		log.Fatal(err)
 	}
+	configureManagerLog(config.DataDir)
+	if managerLogFile != nil {
+		defer managerLogFile.Close()
+	}
 	manager, err := newInstanceManager(config.DataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	settings, err := newManagerSettingsStore(config.DataDir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -39,6 +50,7 @@ func Run() {
 	mux := http.NewServeMux()
 	mux.Handle("/api/setup", setupAPIHandler(runtime, auth))
 	mux.Handle("/api/auth/", auth.handler())
+	mux.Handle("/api/settings", settings.handler(auth))
 	mux.Handle("/api/manager/shutdown", managerShutdownAPIHandler(auth, func() {
 		select {
 		case shutdownRequests <- struct{}{}:
@@ -68,7 +80,10 @@ func Run() {
 	if runtime.requiresSetup() {
 		log.Printf("Initialization required: open a printed URL to configure EchoKit")
 	}
-
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		log.Fatal(err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), managerSignals()...)
 	defer stop()
 	go func() {
@@ -81,10 +96,34 @@ func Run() {
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 	log.Print("EchoManager stopped; managed processes were left running")
+}
+
+func configureManagerLog(dataDir string) {
+	if dataDir == "" {
+		cacheDir, err := os.UserCacheDir()
+		if err != nil {
+			return
+		}
+		dataDir = filepath.Join(cacheDir, "EchoManager")
+	}
+	logDir := filepath.Join(dataDir, "logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return
+	}
+	file, err := os.OpenFile(filepath.Join(logDir, "manager.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	if managerLogFile != nil {
+		_ = managerLogFile.Close()
+	}
+	managerLogFile = file
+	log.SetOutput(file)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 }
 
 func appAssetHandler(assets fs.FS) http.Handler {

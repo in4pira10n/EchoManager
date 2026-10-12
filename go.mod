@@ -5,6 +5,7 @@ go 1.24
 require (
 	github.com/masterzen/winrm v0.0.0-20240702205601-3fad6e106085
 	golang.org/x/crypto v0.31.0
+	golang.org/x/text v0.21.0
 )
 
 require (
@@ -26,5 +27,4 @@ require (
 	github.com/tidwall/transform v0.0.0-20201103190739-32f242e2dbde // indirect
 	golang.org/x/net v0.21.0 // indirect
 	golang.org/x/sys v0.28.0 // indirect
-	golang.org/x/text v0.21.0 // indirect
 )

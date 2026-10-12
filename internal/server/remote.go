@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -141,6 +142,13 @@ func runSSHCommand(ctx context.Context, device Device, script string) (string, e
 		if ctx.Err() != nil {
 			return stdout.String(), ctx.Err()
 		}
+		var exitError *ssh.ExitError
+		if errors.As(err, &exitError) {
+			if message != "" {
+				return stdout.String(), fmt.Errorf("SSH 远程命令失败（退出代码 %d）：%s: %w", exitError.ExitStatus(), message, err)
+			}
+			return stdout.String(), fmt.Errorf("SSH 远程命令失败（退出代码 %d）：%w", exitError.ExitStatus(), err)
+		}
 		if message != "" {
 			return stdout.String(), fmt.Errorf("SSH 远程命令失败：%s", message)
 		}
@@ -262,9 +270,16 @@ port_listener_pids() {
   fi
   printf '%s' "$pids"
 }
+port_is_listening() {
+  if command -v ss >/dev/null 2>&1 && ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .; then return 0; fi
+  if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | grep -q .; then return 0; fi
+  if command -v netstat >/dev/null 2>&1 && netstat -an 2>/dev/null | awk -v port="$port" '$NF == "LISTEN" && $0 ~ ("[.:]" port "[[:space:]]") { found=1 } END { exit !found }'; then return 0; fi
+  { echo >/dev/tcp/127.0.0.1/$port; } 2>/dev/null || { echo >/dev/tcp/::1/$port; } 2>/dev/null
+}
 write_adopted_record() {
   adopted_pid="$1"; adopted_token="$2"; adopted_started="$3"
   [ -n "$adopted_started" ] || adopted_started=$(date +%s)
+  mkdir -p "$(dirname "$meta")" || return 1
   tmp="$meta.tmp.$$"
   printf '%s\n%s\n%s\n%s\n' "$adopted_pid" "$adopted_token" "__ECHOMANAGER_ADOPTED__" "$adopted_started" >"$tmp" || return 1
   mv "$tmp" "$meta" || return 1
@@ -334,6 +349,10 @@ if [ -f "$meta" ]; then
   fi
   if adopted=$(adopt_port_listener); then printf '%%s\n' "$adopted"; exit 0; fi
 fi
+if [ ! -f "$meta" ]; then
+  if adopted=$(adopt_port_listener); then printf '%%s\n' "$adopted"; exit 0; fi
+  if port_is_listening; then printf '__EM_ERROR__|配置端口已有监听进程，但无法唯一确认其身份；为避免启动重复实例，未执行启动'; exit 8; fi
+fi
 nohup env%s "$exe"%s >>"$log" 2>&1 </dev/null &
 pid=$!
 sleep 0.15
@@ -361,8 +380,16 @@ port_listening() {
   if command -v netstat >/dev/null 2>&1 && netstat -an 2>/dev/null | awk -v port="$port" '$NF == "LISTEN" && $0 ~ ("[.:]" port "[[:space:]]") { found=1 } END { exit !found }'; then return 0; fi
   { echo >/dev/tcp/127.0.0.1/$port; } 2>/dev/null || { echo >/dev/tcp/::1/$port; } 2>/dev/null
 }
-if [ ! -f "$meta" ]; then printf '__EM_STATE__|stopped|0|0|\n'; exit 0; fi
-old_pid=$(sed -n '1p' "$meta"); old_token=$(sed -n '2p' "$meta"); old_exe=$(sed -n '3p' "$meta"); old_started=$(sed -n '4p' "$meta")
+if [ ! -f "$meta" ]; then
+  if adopted=$(adopt_port_listener); then
+    old_pid=$(sed -n '1p' "$meta"); old_token=$(sed -n '2p' "$meta"); old_exe=$(sed -n '3p' "$meta"); old_started=$(sed -n '4p' "$meta")
+  else
+    if port_is_listening; then printf '__EM_STATE__|stale|0|0|\n'; else printf '__EM_STATE__|stopped|0|0|\n'; fi
+    exit 0
+  fi
+else
+  old_pid=$(sed -n '1p' "$meta"); old_token=$(sed -n '2p' "$meta"); old_exe=$(sed -n '3p' "$meta"); old_started=$(sed -n '4p' "$meta")
+fi
 pid=$old_pid; token=$old_token; exe=$old_exe; started=$old_started
 if ! process_matches "$pid" "$exe" "$token"; then
   current_token=$(process_start_token "$pid")
@@ -391,9 +418,17 @@ func unixStopScript(instance Instance) string {
 id=%s
 port=%s
 meta="$HOME/.echomanager/instances/$id.meta"
-if [ ! -f "$meta" ]; then printf '__EM_STOPPED__\n'; exit 0; fi
 %s
-old_pid=$(sed -n '1p' "$meta"); old_token=$(sed -n '2p' "$meta"); old_exe=$(sed -n '3p' "$meta"); old_started=$(sed -n '4p' "$meta")
+if [ ! -f "$meta" ]; then
+  if adopted=$(adopt_port_listener); then
+    old_pid=$(sed -n '1p' "$meta"); old_token=$(sed -n '2p' "$meta"); old_exe=$(sed -n '3p' "$meta"); old_started=$(sed -n '4p' "$meta")
+  else
+    if port_is_listening; then printf '__EM_STALE__\n'; exit 8; fi
+    printf '__EM_STOPPED__\n'; exit 0
+  fi
+else
+  old_pid=$(sed -n '1p' "$meta"); old_token=$(sed -n '2p' "$meta"); old_exe=$(sed -n '3p' "$meta"); old_started=$(sed -n '4p' "$meta")
+fi
 pid=$old_pid; token=$old_token; exe=$old_exe
 if ! process_matches "$pid" "$exe" "$token"; then
   current_token=$(process_start_token "$pid")
@@ -457,6 +492,7 @@ function Set-ManagerRecordProperty($record, [string]$name, $value) {
   $record | Add-Member -MemberType NoteProperty -Name $name -Value $value -Force
 }
 function Set-ManagerRecord($record, $process) {
+  if ($null -eq $record) { $record = [pscustomobject]@{} }
   $sameStart = $false
   try { $sameStart = ([int]$record.pid -eq $process.Id -and [long]$record.startedTicks -eq [long]$process.StartTime.ToUniversalTime().Ticks) } catch {}
   try { $executable = [IO.Path]::GetFullPath($process.Path) } catch { $executable = '__ECHOMANAGER_ADOPTED__' }
@@ -471,6 +507,7 @@ function Set-ManagerRecord($record, $process) {
   Set-ManagerRecordProperty $record 'pid' ([int]$process.Id)
   Set-ManagerRecordProperty $record 'startedTicks' $startedTicks
   Set-ManagerRecordProperty $record 'startedAt' $startedAt
+  [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($metaPath))
   $temporaryPath = $metaPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
   $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
   Move-Item -LiteralPath $temporaryPath -Destination $metaPath -Force
@@ -529,6 +566,10 @@ if ($null -ne $existing) {
   $adopted = Adopt-ManagerProcess $existing
   if ($null -ne $adopted) { Write-Output ('__EM_STARTED__|' + $adopted.Id + '|' + $existing.startedAt); exit 0 }
   if ($null -ne (Get-ManagerRawProcess $existing)) { throw ('远端记录的 PID ' + $existing.pid + ' 仍在运行，但身份校验失败；无法从端口 ' + $port + ' 唯一确认监听进程（已尝试 Get-NetTCPConnection 和 netstat），为避免接管错误进程或启动重复实例，未执行接管') }
+} else {
+  $adopted = Adopt-ManagerProcess ([pscustomobject]@{})
+  if ($null -ne $adopted) { $record = Get-ManagerRecord; Write-Output ('__EM_STARTED__|' + $record.pid + '|' + $record.startedAt); exit 0 }
+  if (@(Get-PortListenerOwnerIds).Count -gt 0) { throw ('配置端口 ' + $port + ' 已有监听进程，但无法唯一确认其身份；为避免启动重复实例，未执行启动') }
 }
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw '程序路径不存在或不是文件' }
 $launchToken = [guid]::NewGuid().ToString('N')
@@ -713,7 +754,14 @@ function Get-ManagerProcess($record) {
 }
 %s
 $record = Get-ManagerRecord
-if ($null -eq $record) { Write-Output '__EM_STATE__|stopped|0|0|'; exit 0 }
+if ($null -eq $record) {
+  $adopted = Adopt-ManagerProcess ([pscustomobject]@{})
+  if ($null -eq $adopted) {
+    if (@(Get-PortListenerOwnerIds).Count -gt 0) { Write-Output '__EM_STATE__|stale|0|0|'; exit 0 }
+    Write-Output '__EM_STATE__|stopped|0|0|'; exit 0
+  }
+  $record = Get-ManagerRecord
+}
 $check = Get-ManagerProcess $record
 if ($check.kind -ne 'active') {
   $adopted = Adopt-ManagerProcess $record
@@ -758,7 +806,14 @@ function Get-ManagerProcess($record) {
 }
 %s
 $record = Get-ManagerRecord
-if ($null -eq $record) { Write-Output '__EM_STOPPED__'; exit 0 }
+if ($null -eq $record) {
+  $adopted = Adopt-ManagerProcess ([pscustomobject]@{})
+  if ($null -eq $adopted) {
+    if (@(Get-PortListenerOwnerIds).Count -gt 0) { Write-Output '__EM_STALE__'; exit 8 }
+    Write-Output '__EM_STOPPED__'; exit 0
+  }
+  $record = Get-ManagerRecord
+}
 $check = Get-ManagerProcess $record
 if ($check.kind -ne 'active') {
   $adopted = Adopt-ManagerProcess $record
@@ -861,6 +916,33 @@ func findRemoteMarker(output, prefix string) []string {
 		}
 	}
 	return found
+}
+
+func hasRemoteMarkerLine(output, marker string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == marker {
+			return true
+		}
+	}
+	return false
+}
+
+func remoteStopResult(output string, commandErr error) (confirmed bool, stale bool, resultErr error) {
+	if hasRemoteMarkerLine(output, "__EM_STALE__") {
+		return false, true, errors.New("远端进程身份发生变化，且无法唯一确认配置端口的监听进程；为避免误停其他程序，未停止")
+	}
+	if hasRemoteMarkerLine(output, "__EM_STOPPED__") {
+		return true, false, nil
+	}
+	if commandErr != nil {
+		var exitError *ssh.ExitError
+		if errors.As(commandErr, &exitError) {
+			return false, false, fmt.Errorf("SSH 停止命令退出代码 %d，且未收到远端停止确认：%w", exitError.ExitStatus(), commandErr)
+		}
+		return false, false, fmt.Errorf("未收到远端停止确认：%w", commandErr)
+	}
+	return false, false, fmt.Errorf("目标设备未确认停止：%s", strings.TrimSpace(output))
 }
 
 func parseRemoteState(output string) (remoteInstanceState, error) {
@@ -1092,7 +1174,26 @@ func (m *instanceManager) stopRemote(id string) (resultErr error) {
 	instance := cloneInstance(m.instances[index])
 	if instance.PID <= 0 {
 		m.mu.Unlock()
-		return apiError{status: 409, message: "没有可核验的远程进程；为安全起见不会按端口停止程序。请先刷新状态。"}
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		refreshErr := m.refreshRemoteStates(refreshCtx, id)
+		cancel()
+		m.mu.Lock()
+		index = m.indexLocked(id)
+		if index < 0 {
+			m.mu.Unlock()
+			return apiError{status: http.StatusNotFound, message: "找不到此实例。"}
+		}
+		instance = cloneInstance(m.instances[index])
+		if instance.PID <= 0 {
+			m.mu.Unlock()
+			if refreshErr != nil {
+				return apiError{status: http.StatusBadGateway, message: "无法核验远程进程，未停止任何程序：" + deviceError(refreshErr)}
+			}
+			if instance.Error != "" {
+				return apiError{status: http.StatusBadGateway, message: "无法核验远程进程，未停止任何程序：" + instance.Error}
+			}
+			return apiError{status: http.StatusConflict, message: "未发现可安全接管的唯一端口监听进程；为避免误停其他程序，未执行停止。"}
+		}
 	}
 	device, found := m.deviceLocked(instance.DeviceID)
 	if !found {
@@ -1116,25 +1217,54 @@ func (m *instanceManager) stopRemote(id string) (resultErr error) {
 		"STOP remote-command error=%q output=%q",
 		errorString(err), strings.TrimSpace(output),
 	))
+	stopConfirmed, stale, stopErr := remoteStopResult(output, err)
+	verifiedStopped := false
+	if !stopConfirmed && !stale {
+		verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 12*time.Second)
+		verifyOutput, verifyErr := runRemoteCommand(verifyCtx, device, remoteStatusScript(device, instance))
+		verifyCancel()
+		m.appendRemoteDebugLog(id, fmt.Sprintf(
+			"STOP follow-up status error=%q output=%q",
+			errorString(verifyErr), strings.TrimSpace(verifyOutput),
+		))
+		if verifyErr == nil {
+			remoteState, parseErr := parseRemoteState(verifyOutput)
+			if parseErr == nil && remoteState.Status == statusStopped {
+				stopConfirmed = true
+				verifiedStopped = true
+			} else if parseErr != nil {
+				stopErr = fmt.Errorf("%w；停止后状态复核无法解析：%v", stopErr, parseErr)
+			} else {
+				stopErr = fmt.Errorf("%w；停止后状态复核仍为 %s（PID %d）", stopErr, remoteState.Status, remoteState.PID)
+			}
+		} else {
+			stopErr = fmt.Errorf("%w；停止后状态复核失败：%v", stopErr, verifyErr)
+		}
+	}
+	if stale {
+		if !m.setRemoteStopError(id, generation, stopErr) {
+			return nil
+		}
+		return apiError{status: 409, message: stopErr.Error()}
+	}
+	if !stopConfirmed {
+		if !m.setRemoteStopError(id, generation, stopErr) {
+			return nil
+		}
+		return apiError{status: 502, message: deviceError(stopErr)}
+	}
 	if err != nil {
-		if !m.setRemoteStopError(id, generation, err) {
-			return nil
+		source := "explicit stopped marker"
+		if verifiedStopped {
+			source = "follow-up status verification"
 		}
-		return apiError{status: 502, message: deviceError(err)}
-	}
-	if len(findRemoteMarker(output, "__EM_STALE__")) > 0 {
-		err := errors.New("远端进程身份发生变化，且无法唯一确认配置端口的监听进程；为避免误停其他程序，未停止")
-		if !m.setRemoteStopError(id, generation, err) {
-			return nil
-		}
-		return apiError{status: 409, message: err.Error()}
-	}
-	if len(findRemoteMarker(output, "__EM_STOPPED__")) == 0 {
-		err := fmt.Errorf("目标设备未确认停止：%s", strings.TrimSpace(output))
-		if !m.setRemoteStopError(id, generation, err) {
-			return nil
-		}
-		return apiError{status: 502, message: deviceError(err)}
+		m.appendRemoteDebugLog(id, fmt.Sprintf(
+			"STOP accepted %s despite remote command error error=%q",
+			source,
+			err.Error(),
+		))
+	} else if verifiedStopped {
+		m.appendRemoteDebugLog(id, "STOP confirmed by follow-up status verification after missing command marker")
 	}
 	m.mu.Lock()
 	index = m.indexLocked(id)

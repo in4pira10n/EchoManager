@@ -208,6 +208,89 @@ func TestFindAppConfigPathPrefersExecutableDirectory(t *testing.T) {
 	}
 }
 
+func TestPortableManagerDataDirectoryCopiesLegacyStateWithoutDeletingIt(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, "legacy", "EchoManager")
+	portable := filepath.Join(root, "app", managerDataDirectoryName)
+	if err := os.MkdirAll(filepath.Dir(portable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for relative, content := range map[string]string{
+		"instances.json":     `{"instances":[]}`,
+		"device-secrets.key": "secret-key",
+		"logs/example.log":   "task log",
+		"icons/example.png":  "icon bytes",
+	} {
+		path := filepath.Join(legacy, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateLegacyManagerDataDir(legacy, portable); err != nil {
+		t.Fatal(err)
+	}
+	for relative, want := range map[string]string{
+		"instances.json":     `{"instances":[]}`,
+		"device-secrets.key": "secret-key",
+		"logs/example.log":   "task log",
+		"icons/example.png":  "icon bytes",
+	} {
+		for _, dir := range []string{legacy, portable} {
+			got, err := os.ReadFile(filepath.Join(dir, relative))
+			if err != nil || string(got) != want {
+				t.Fatalf("%s contents = %q, err=%v; want %q", filepath.Join(dir, relative), got, err, want)
+			}
+		}
+	}
+}
+
+func TestLegacyManagerDataMigrationDoesNotOverwriteExistingPortableData(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, "legacy")
+	portable := filepath.Join(root, managerDataDirectoryName)
+	for path, value := range map[string]string{
+		filepath.Join(legacy, "instances.json"):   "legacy",
+		filepath.Join(portable, "instances.json"): "current",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateLegacyManagerDataDir(legacy, portable); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(portable, "instances.json"))
+	if err != nil || string(got) != "current" {
+		t.Fatalf("portable data = %q, err=%v; want current data to remain unchanged", got, err)
+	}
+}
+
+func TestDefaultManagerDataDirectoryIsBesideProgram(t *testing.T) {
+	root := t.TempDir()
+	programDir := filepath.Join(root, "EchoManager")
+	if err := os.MkdirAll(programDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workingDir := filepath.Join(root, "launcher")
+	if err := os.MkdirAll(workingDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := defaultManagerDataDir(filepath.Join(programDir, "EchoManager"), filepath.Join(programDir, "config.json"), workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(programDir, managerDataDirectoryName)
+	if got != want {
+		t.Fatalf("default data directory = %q, want %q", got, want)
+	}
+}
+
 func TestKitAssetHandlerOnlyServesRuntimeAssets(t *testing.T) {
 	root := t.TempDir()
 	writeTestAsset(t, root, "components/button/index.js", "component")

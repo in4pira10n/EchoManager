@@ -48,20 +48,21 @@ func isActiveStatus(status string) bool {
 }
 
 type Instance struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	DeviceID       string            `json:"deviceId,omitempty"`
-	ExecutablePath string            `json:"executablePath"`
-	ConfiguredPort int               `json:"configuredPort"`
-	Arguments      []string          `json:"arguments"`
-	Environment    map[string]string `json:"environment"`
-	IconFile       string            `json:"-"`
-	Status         string            `json:"status"`
-	PID            int               `json:"pid,omitempty"`
-	ActualPort     int               `json:"actualPort,omitempty"`
-	StartedAt      string            `json:"startedAt,omitempty"`
-	LastExitCode   *int              `json:"lastExitCode,omitempty"`
-	Error          string            `json:"error,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	DeviceID          string            `json:"deviceId,omitempty"`
+	ExecutablePath    string            `json:"executablePath"`
+	ConfiguredPort    int               `json:"configuredPort"`
+	Arguments         []string          `json:"arguments"`
+	Environment       map[string]string `json:"environment"`
+	IconFile          string            `json:"-"`
+	Status            string            `json:"status"`
+	PID               int               `json:"pid,omitempty"`
+	ActualPort        int               `json:"actualPort,omitempty"`
+	StartedAt         string            `json:"startedAt,omitempty"`
+	ProcessStartToken string            `json:"-"`
+	LastExitCode      *int              `json:"lastExitCode,omitempty"`
+	Error             string            `json:"error,omitempty"`
 }
 
 type persistedState struct {
@@ -71,7 +72,8 @@ type persistedState struct {
 
 type persistedInstance struct {
 	Instance
-	IconFile string `json:"iconFile,omitempty"`
+	IconFile          string `json:"iconFile,omitempty"`
+	ProcessStartToken string `json:"processStartToken,omitempty"`
 }
 
 type persistedDevice struct {
@@ -164,6 +166,7 @@ func newInstanceManager(dataDir string) (*instanceManager, error) {
 		for _, saved := range state.Instances {
 			instance := saved.Instance
 			instance.IconFile = saved.IconFile
+			instance.ProcessStartToken = saved.ProcessStartToken
 			if instance.DeviceID == localDeviceID {
 				instance.DeviceID = ""
 			}
@@ -205,6 +208,7 @@ func newInstanceManager(dataDir string) (*instanceManager, error) {
 				instance.Error = "登记的可执行文件不可用：" + err.Error()
 			} else if previousPID > 0 && (previousStatus == statusStarting || previousStatus == statusRunning || previousStatus == statusStopping || previousStatus == statusException) && portAccepting(instance.ConfiguredPort) {
 				instance.Status = statusException
+				instance.PID = previousPID
 				instance.ActualPort = instance.ConfiguredPort
 				instance.Error = fmt.Sprintf("管理器重启后发现端口 %d 仍有服务响应；无法确认进程身份，因此不会自动接管或结束它。", instance.ConfiguredPort)
 				m.appendLogLocked(instance.ID, instance.Error)
@@ -223,7 +227,9 @@ func newInstanceManager(dataDir string) (*instanceManager, error) {
 func (m *instanceManager) saveLocked() error {
 	instances := make([]persistedInstance, 0, len(m.instances))
 	for _, instance := range m.instances {
-		instances = append(instances, persistedInstance{Instance: instance, IconFile: instance.IconFile})
+		instances = append(instances, persistedInstance{
+			Instance: instance, IconFile: instance.IconFile, ProcessStartToken: instance.ProcessStartToken,
+		})
 	}
 	devices := make([]persistedDevice, 0, len(m.devices))
 	for _, device := range m.devices {
@@ -288,6 +294,204 @@ func (m *instanceManager) list() []Instance {
 		result = append(result, cloneInstance(instance))
 	}
 	return result
+}
+
+func (m *instanceManager) refreshLocalStates() {
+	instances := m.list()
+	ports := make([]int, 0, len(instances))
+	seenPorts := make(map[int]struct{})
+	for _, instance := range instances {
+		if instance.DeviceID != "" || instance.ConfiguredPort < 1 {
+			continue
+		}
+		if _, exists := seenPorts[instance.ConfiguredPort]; !exists {
+			seenPorts[instance.ConfiguredPort] = struct{}{}
+			ports = append(ports, instance.ConfiguredPort)
+		}
+	}
+	listeners, err := discoverPortListeners(ports)
+	if err != nil {
+		log.Printf("local process discovery failed: %v", err)
+		return
+	}
+	stalePIDs := make([]int, 0)
+	for _, instance := range instances {
+		if instance.DeviceID == "" && instance.PID > 0 && len(listeners[instance.ConfiguredPort]) == 0 {
+			stalePIDs = append(stalePIDs, instance.PID)
+		}
+	}
+	staleProcesses, processInspectErr := inspectProcessIdentities(stalePIDs)
+	if processInspectErr != nil {
+		log.Printf("inspect local processes without listeners: %v", processInspectErr)
+	}
+
+	claims := make(map[int]map[int]int)
+	for _, instance := range instances {
+		if instance.DeviceID != "" {
+			continue
+		}
+		for _, identity := range listeners[instance.ConfiguredPort] {
+			if identity.PID == 0 || identity.Executable == "" || !sameExecutablePath(instance.ExecutablePath, identity.Executable) {
+				continue
+			}
+			if claims[instance.ConfiguredPort] == nil {
+				claims[instance.ConfiguredPort] = make(map[int]int)
+			}
+			claims[instance.ConfiguredPort][identity.PID]++
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	changed := false
+	for _, snapshot := range instances {
+		if snapshot.DeviceID != "" || m.running[snapshot.ID] != nil {
+			continue
+		}
+		index := m.indexLocked(snapshot.ID)
+		if index < 0 {
+			continue
+		}
+		current := &m.instances[index]
+		portListeners := listeners[snapshot.ConfiguredPort]
+		var match processIdentity
+		matchCount := 0
+		for _, identity := range portListeners {
+			if identity.PID > 0 && identity.Executable != "" && identity.StartToken != "" &&
+				sameExecutablePath(snapshot.ExecutablePath, identity.Executable) && claims[snapshot.ConfiguredPort][identity.PID] == 1 {
+				match = identity
+				matchCount++
+			}
+		}
+		if len(portListeners) == 1 && matchCount == 1 {
+			startedAt := normalizeProcessStartTime(match.StartedAt)
+			if startedAt == "" {
+				startedAt = time.Now().Format(time.RFC3339)
+			}
+			if current.Status != statusRunning || current.PID != match.PID || current.ActualPort != snapshot.ConfiguredPort || current.ProcessStartToken != match.StartToken {
+				current.Status = statusRunning
+				current.PID = match.PID
+				current.ActualPort = snapshot.ConfiguredPort
+				current.StartedAt = startedAt
+				current.ProcessStartToken = match.StartToken
+				current.Error = ""
+				changed = true
+			}
+			continue
+		}
+		if len(portListeners) > 0 {
+			message := fmt.Sprintf("端口 %d 有进程监听，但无法唯一确认它是此任务（需要唯一监听者且可执行文件路径匹配）；为避免误接管，未控制该进程。", snapshot.ConfiguredPort)
+			if current.Status != statusException || current.Error != message || current.PID != 0 || current.ActualPort != snapshot.ConfiguredPort {
+				current.Status = statusException
+				current.PID = 0
+				current.ActualPort = snapshot.ConfiguredPort
+				current.StartedAt = ""
+				current.ProcessStartToken = ""
+				current.Error = message
+				changed = true
+			}
+			continue
+		}
+		if snapshot.PID > 0 {
+			identity, exists := staleProcesses[snapshot.PID]
+			if exists && processInspectErr == nil && identity.StartToken != "" && identity.StartToken == snapshot.ProcessStartToken && sameExecutablePath(snapshot.ExecutablePath, identity.Executable) {
+				message := fmt.Sprintf("进程 PID %d 仍在运行，但端口 %d 当前未监听。", snapshot.PID, snapshot.ConfiguredPort)
+				if current.Status != statusException || current.Error != message || current.ActualPort != 0 {
+					current.Status = statusException
+					current.ActualPort = 0
+					current.Error = message
+					current.StartedAt = normalizeProcessStartTime(identity.StartedAt)
+					changed = true
+				}
+				continue
+			}
+			if processInspectErr != nil {
+				continue
+			}
+			current.Status = statusStopped
+			current.PID = 0
+			current.ActualPort = 0
+			current.StartedAt = ""
+			current.ProcessStartToken = ""
+			current.Error = ""
+			changed = true
+		}
+	}
+	if changed {
+		if err := m.saveLocked(); err != nil {
+			log.Printf("save refreshed local process state: %v", err)
+		}
+	}
+}
+
+func sameExecutablePath(configured, actual string) bool {
+	configuredPath := normalizedExecutablePath(configured)
+	actualPath := normalizedExecutablePath(actual)
+	return configuredPath != "" && actualPath != "" && processExecutableMatches(configuredPath, actualPath)
+}
+
+func normalizedExecutablePath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+		absolute = resolved
+	}
+	return filepath.Clean(absolute)
+}
+
+func normalizeProcessStartTime(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed.Format(time.RFC3339)
+	}
+	for _, layout := range []string{"Mon Jan _2 15:04:05 2006", "Mon Jan 2 15:04:05 2006"} {
+		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+			return parsed.Format(time.RFC3339)
+		}
+	}
+	return ""
+}
+
+func (m *instanceManager) reorder(ids []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(ids) != len(m.instances) {
+		return apiError{status: http.StatusConflict, message: "任务列表已更新，请刷新后重试。"}
+	}
+
+	byID := make(map[string]Instance, len(m.instances))
+	for _, instance := range m.instances {
+		byID[instance.ID] = instance
+	}
+	ordered := make([]Instance, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		instance, exists := byID[id]
+		if !exists || !idPattern.MatchString(id) {
+			return apiError{status: http.StatusBadRequest, message: "任务顺序包含无效实例。"}
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return apiError{status: http.StatusBadRequest, message: "任务顺序包含重复实例。"}
+		}
+		seen[id] = struct{}{}
+		ordered = append(ordered, instance)
+	}
+
+	previous := m.instances
+	m.instances = ordered
+	if err := m.saveLocked(); err != nil {
+		m.instances = previous
+		return err
+	}
+	return nil
 }
 
 func (m *instanceManager) instanceByID(id string) (Instance, bool) {
@@ -385,6 +589,9 @@ func (m *instanceManager) update(id string, input Instance) (Instance, error) {
 		return Instance{}, apiError{status: http.StatusNotFound, message: "找不到此实例。"}
 	}
 	previous := m.instances[index]
+	if previous.PID > 0 && previous.ProcessStartToken != "" {
+		return Instance{}, apiError{status: http.StatusConflict, message: "已接管的运行实例不可编辑，请先停止。"}
+	}
 	if input.DeviceID != "" && m.deviceIndexLocked(input.DeviceID) < 0 {
 		return Instance{}, apiError{status: http.StatusConflict, message: "目标设备已被移除，请刷新后重试。"}
 	}
@@ -394,6 +601,7 @@ func (m *instanceManager) update(id string, input Instance) (Instance, error) {
 	input.PID = 0
 	input.ActualPort = 0
 	input.StartedAt = ""
+	input.ProcessStartToken = ""
 	input.LastExitCode = previous.LastExitCode
 	if input.DeviceID == "" {
 		if err := validateExecutable(input.ExecutablePath); err != nil {
@@ -525,6 +733,10 @@ func (m *instanceManager) start(id string) error {
 		m.mu.Unlock()
 		return apiError{status: http.StatusConflict, message: "此实例已经处于启动或运行流程中。"}
 	}
+	if instance.PID > 0 && instance.ProcessStartToken != "" && instance.Status == statusException {
+		m.mu.Unlock()
+		return apiError{status: http.StatusConflict, message: "此任务仍有已核验的进程；请先刷新状态或停止该进程。"}
+	}
 	if instance.Status == statusStarting || instance.Status == statusRunning || instance.Status == statusStopping {
 		m.mu.Unlock()
 		return apiError{status: http.StatusConflict, message: "请等待当前状态完成后再操作。"}
@@ -572,6 +784,7 @@ func (m *instanceManager) start(id string) error {
 	m.running[id] = mp
 	m.instances[index].Status = statusStarting
 	m.instances[index].PID = cmd.Process.Pid
+	m.instances[index].ProcessStartToken = ""
 	m.instances[index].ActualPort = 0
 	m.instances[index].StartedAt = time.Now().Format(time.RFC3339)
 	m.instances[index].LastExitCode = nil
@@ -709,6 +922,7 @@ func (m *instanceManager) waitForExit(id string, process *managedProcess) {
 			instance.Error = "进程意外退出。请查看实例日志。"
 		}
 		instance.PID = 0
+		instance.ProcessStartToken = ""
 		instance.ActualPort = 0
 		if exitError, ok := err.(*exec.ExitError); ok {
 			code := exitError.ExitCode()
@@ -725,25 +939,42 @@ func (m *instanceManager) waitForExit(id string, process *managedProcess) {
 	close(process.done)
 }
 
-func (m *instanceManager) stop(id string) error {
+func (m *instanceManager) stop(id string) (resultErr error) {
+	var attempted Instance
+	defer func() {
+		if resultErr != nil {
+			m.appendStopFailureLog(id, attempted, resultErr)
+		}
+	}()
+
 	m.mu.Lock()
 	index := m.indexLocked(id)
 	if index < 0 {
 		m.mu.Unlock()
 		return apiError{status: http.StatusNotFound, message: "找不到此实例。"}
 	}
+	attempted = cloneInstance(m.instances[index])
 	if m.instances[index].DeviceID != "" {
 		m.mu.Unlock()
 		return m.stopRemote(id)
 	}
-	process := m.running[id]
-	if process == nil {
-		m.mu.Unlock()
-		return apiError{status: http.StatusConflict, message: "实例当前没有由 EchoManager 管理的运行进程。"}
-	}
 	if m.instances[index].Status == statusStopping {
 		m.mu.Unlock()
 		return apiError{status: http.StatusConflict, message: "此实例正在停止。"}
+	}
+	process := m.running[id]
+	if process == nil {
+		instance := m.instances[index]
+		if instance.PID > 0 && instance.ProcessStartToken != "" &&
+			(instance.Status == statusRunning || instance.Status == statusException || instance.Status == statusStopping) {
+			m.instances[index].Status = statusStopping
+			m.instances[index].Error = "正在核验并停止已接管的进程…"
+			_ = m.saveLocked()
+			m.mu.Unlock()
+			return m.stopDiscoveredProcess(instance)
+		}
+		m.mu.Unlock()
+		return apiError{status: http.StatusConflict, message: "实例当前没有由 EchoManager 管理的运行进程。"}
 	}
 	process.expected = true
 	m.instances[index].Status = statusStopping
@@ -751,9 +982,9 @@ func (m *instanceManager) stop(id string) error {
 	_ = m.saveLocked()
 	m.mu.Unlock()
 
+	var gracefulStopErr error
 	if err := terminateManagedProcess(process.cmd, false); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		m.markStopError(id, process, err)
-		return apiError{status: http.StatusInternalServerError, message: "无法停止实例：" + err.Error()}
+		gracefulStopErr = err
 	}
 	select {
 	case <-process.done:
@@ -761,16 +992,28 @@ func (m *instanceManager) stop(id string) error {
 	case <-time.After(stopTimeout):
 	}
 	if err := terminateManagedProcess(process.cmd, true); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		m.markStopError(id, process, err)
-		return apiError{status: http.StatusInternalServerError, message: "强制停止实例失败：" + err.Error()}
+		stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf("强制停止失败：%w", err))
+		m.markStopError(id, process, stopErr)
+		return apiError{status: http.StatusInternalServerError, message: stopErr.Error()}
 	}
 	select {
 	case <-process.done:
 		return nil
 	case <-time.After(2 * time.Second):
-		m.markStopError(id, process, errors.New("进程未在强制停止后退出"))
+		stopErr := withGracefulStopError(gracefulStopErr, errors.New("进程在强制停止后仍未退出"))
+		m.markStopError(id, process, stopErr)
 		return apiError{status: http.StatusInternalServerError, message: "进程未能退出，请检查系统权限。"}
 	}
+}
+
+func withGracefulStopError(gracefulErr, finalErr error) error {
+	if finalErr == nil {
+		return gracefulErr
+	}
+	if gracefulErr == nil {
+		return finalErr
+	}
+	return fmt.Errorf("%w；常规停止请求也失败：%v", finalErr, gracefulErr)
 }
 
 func (m *instanceManager) markStopError(id string, process *managedProcess, err error) {
@@ -935,6 +1178,126 @@ func validateInstanceForPlatform(instance *Instance, platform string) error {
 	return nil
 }
 
+func (m *instanceManager) stopDiscoveredProcess(instance Instance) error {
+	identity, exists, err := inspectProcessIdentity(instance.PID)
+	if err != nil {
+		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, err)
+		return apiError{status: http.StatusConflict, message: "无法安全核验进程身份，未发送停止命令：" + err.Error()}
+	}
+	if !exists {
+		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
+		return nil
+	}
+	if identity.StartToken != instance.ProcessStartToken || !sameExecutablePath(instance.ExecutablePath, identity.Executable) {
+		err := errors.New("当前 PID 已不再对应此前接管的可执行文件或启动实例")
+		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, err)
+		return apiError{status: http.StatusConflict, message: "进程身份已变化，为避免误停其他程序，已取消操作。"}
+	}
+
+	var gracefulStopErr error
+	if err := terminateManagedPID(instance.PID, false); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		gracefulStopErr = err
+		stillMatches, inspectErr := discoveredProcessMatches(instance)
+		if inspectErr != nil {
+			stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf("无法复核进程身份：%w", inspectErr))
+			m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, stopErr)
+			return apiError{status: http.StatusInternalServerError, message: "无法安全停止已接管的实例：" + stopErr.Error()}
+		}
+		if !stillMatches {
+			m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
+			return nil
+		}
+	}
+	if waitForProcessExit(instance.PID, instance.ProcessStartToken, stopTimeout) {
+		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
+		return nil
+	}
+	stillMatches, inspectErr := discoveredProcessMatches(instance)
+	if inspectErr != nil {
+		stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf("强制停止前无法复核进程身份：%w", inspectErr))
+		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, stopErr)
+		return apiError{status: http.StatusInternalServerError, message: "无法安全停止已接管的实例：" + stopErr.Error()}
+	}
+	if !stillMatches {
+		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
+		return nil
+	}
+	if err := terminateManagedPID(instance.PID, true); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		stillMatches, inspectErr := discoveredProcessMatches(instance)
+		if inspectErr == nil && !stillMatches {
+			m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
+			return nil
+		}
+		stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf("强制停止已接管实例失败：%w", err))
+		if inspectErr != nil {
+			stopErr = fmt.Errorf("%w（停止后身份复核失败：%v）", stopErr, inspectErr)
+		}
+		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, stopErr)
+		return apiError{status: http.StatusInternalServerError, message: stopErr.Error()}
+	}
+	if !waitForProcessExit(instance.PID, instance.ProcessStartToken, 2*time.Second) {
+		stopErr := withGracefulStopError(gracefulStopErr, errors.New("进程在强制停止后仍未退出"))
+		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, stopErr)
+		return apiError{status: http.StatusInternalServerError, message: "进程未能退出，请检查系统权限。"}
+	}
+	m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
+	return nil
+}
+
+func discoveredProcessMatches(instance Instance) (bool, error) {
+	identity, exists, err := inspectProcessIdentity(instance.PID)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	if identity.StartToken != instance.ProcessStartToken || !sameExecutablePath(instance.ExecutablePath, identity.Executable) {
+		return false, errors.New("当前 PID 已不再对应此前接管的可执行文件或启动实例")
+	}
+	return true, nil
+}
+
+func waitForProcessExit(pid int, startToken string, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	for {
+		identity, exists, err := inspectProcessIdentity(pid)
+		if err == nil && (!exists || identity.StartToken != startToken) {
+			return true
+		}
+		select {
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *instanceManager) finishDiscoveredStop(id string, pid int, startToken string, stopErr error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := m.indexLocked(id)
+	if index < 0 || m.instances[index].PID != pid || m.instances[index].ProcessStartToken != startToken {
+		return
+	}
+	if stopErr != nil {
+		m.instances[index].Status = statusException
+		m.instances[index].Error = "停止失败：" + stopErr.Error()
+		_ = m.saveLocked()
+		return
+	}
+	m.instances[index].Status = statusStopped
+	m.instances[index].PID = 0
+	m.instances[index].ActualPort = 0
+	m.instances[index].StartedAt = ""
+	m.instances[index].ProcessStartToken = ""
+	m.instances[index].Error = ""
+	_ = m.saveLocked()
+}
+
 func decodeIconData(iconData string) ([]byte, error) {
 	if iconData == "" {
 		return nil, apiError{status: http.StatusBadRequest, message: "请提供任务图标图片。"}
@@ -1056,12 +1419,44 @@ func (m *instanceManager) apiHandler(auth *authManager) http.Handler {
 			m.handleInstances(w, r)
 			return
 		}
+		if r.URL.Path == "/api/instances/order" {
+			m.handleInstanceOrder(w, r)
+			return
+		}
 		if !strings.HasPrefix(r.URL.Path, "/api/instances/") {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "未找到 API 路径。"})
 			return
 		}
 		m.handleInstance(w, r, strings.TrimPrefix(r.URL.Path, "/api/instances/"))
 	})
+}
+
+func (m *instanceManager) handleInstanceOrder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w)
+		return
+	}
+	var input struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if input.IDs == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "任务顺序不能为空。"})
+		return
+	}
+	if err := m.reorder(input.IDs); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	instances := m.list()
+	response := make([]instanceResponse, 0, len(instances))
+	for _, instance := range instances {
+		response = append(response, m.publicInstance(instance))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"instances": response})
 }
 
 func sameOriginRequest(r *http.Request) bool {
@@ -1087,6 +1482,7 @@ func (m *instanceManager) handleInstances(w http.ResponseWriter, r *http.Request
 			return
 		}
 		instanceFilter := r.URL.Query().Get("instance")
+		m.refreshLocalStates()
 		if err := m.refreshRemoteStates(r.Context(), instanceFilter); err != nil {
 			writeAPIError(w, err)
 			return
