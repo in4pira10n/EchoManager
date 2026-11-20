@@ -116,52 +116,52 @@ func validateDevice(device *Device, requireSecret bool) error {
 	device.Username = strings.TrimSpace(device.Username)
 	device.KeyPath = strings.TrimSpace(device.KeyPath)
 	if device.Name == "" || len(device.Name) > 120 {
-		return apiError{status: http.StatusBadRequest, message: "设备名称必填，且最多 120 个字符。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message001")}
 	}
 	ipAddress := net.ParseIP(device.Address)
 	if device.Address == "" || len(device.Address) > 253 || (ipAddress == nil && !deviceAddressPattern.MatchString(device.Address)) {
-		return apiError{status: http.StatusBadRequest, message: "设备地址应填写 IP 地址或主机名，不要填写协议、路径或端口。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message002")}
 	}
 	if ipAddress != nil && (ipAddress.IsUnspecified() || ipAddress.IsMulticast()) {
-		return apiError{status: http.StatusBadRequest, message: "设备地址不能是未指定或组播地址。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message003")}
 	}
 	if device.Platform != "unix" && device.Platform != "windows" {
-		return apiError{status: http.StatusBadRequest, message: "目标系统请选择 macOS / Linux 或 Windows。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message004")}
 	}
 	if device.Transport != "ssh" && device.Transport != "winrm" {
-		return apiError{status: http.StatusBadRequest, message: "远程连接方式请选择 SSH 或 WinRM。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message005")}
 	}
 	if device.Transport == "winrm" && device.Platform != "windows" {
-		return apiError{status: http.StatusBadRequest, message: "WinRM 仅支持 Windows 目标设备。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message006")}
 	}
 	if device.Transport == "ssh" && device.Platform == "windows" {
-		return apiError{status: http.StatusBadRequest, message: "Windows 设备请使用 HTTPS WinRM；SSH 远程进程控制暂不支持 Windows Shell。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message007")}
 	}
 	if device.Port < 1 || device.Port > 65535 {
-		return apiError{status: http.StatusBadRequest, message: "连接端口必须在 1–65535 范围内。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("device.invalidPort")}
 	}
 	if device.Username == "" || len(device.Username) > 256 {
-		return apiError{status: http.StatusBadRequest, message: "远程登录用户名必填，且最多 256 个字符。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message008")}
 	}
 	if device.Transport == "ssh" {
 		if device.AuthType != "password" && device.AuthType != "key" {
-			return apiError{status: http.StatusBadRequest, message: "SSH 认证方式请选择密码或私钥。"}
+			return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message009")}
 		}
 		if device.AuthType == "key" {
 			if device.KeyPath == "" || !filepath.IsAbs(device.KeyPath) {
-				return apiError{status: http.StatusBadRequest, message: "SSH 私钥路径必须是 Manager 主机上的绝对路径。"}
+				return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message010")}
 			}
 			if _, err := os.Stat(device.KeyPath); err != nil {
-				return apiError{status: http.StatusBadRequest, message: "无法读取 SSH 私钥：" + err.Error()}
+				return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message011") + err.Error()}
 			}
 		} else if requireSecret && device.Password == "" {
-			return apiError{status: http.StatusBadRequest, message: "SSH 密码认证需要填写密码。"}
+			return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message012")}
 		}
 	} else if device.Password == "" && requireSecret {
-		return apiError{status: http.StatusBadRequest, message: "WinRM 需要填写密码。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message013")}
 	}
 	if len(device.Password) > 4096 {
-		return apiError{status: http.StatusBadRequest, message: "凭据长度不能超过 4096 个字符。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.device.message014")}
 	}
 	return nil
 }
@@ -170,12 +170,12 @@ func validateTargetExecutable(path, platform string) error {
 	path = strings.TrimSpace(path)
 	if platform == "windows" {
 		if !regexp.MustCompile(`^(?:[A-Za-z]:\\|\\\\)[^\x00]*$`).MatchString(path) {
-			return errors.New("Windows 目标程序路径必须是盘符路径或 UNC 绝对路径。")
+			return errors.New(uiText("backend.device.message015"))
 		}
 		return nil
 	}
 	if !strings.HasPrefix(path, "/") || strings.ContainsRune(path, '\x00') {
-		return errors.New("macOS / Linux 目标程序路径必须是以 / 开头的绝对路径。")
+		return errors.New(uiText("backend.device.message016"))
 	}
 	return nil
 }
@@ -188,7 +188,7 @@ func (m *instanceManager) platformForDevice(id string) (string, error) {
 	defer m.mu.Unlock()
 	device, ok := m.deviceLocked(id)
 	if !ok {
-		return "", apiError{status: http.StatusBadRequest, message: "所选目标设备不存在；请刷新设备列表。"}
+		return "", apiError{status: http.StatusBadRequest, message: uiText("backend.device.message017")}
 	}
 	return device.Platform, nil
 }
@@ -218,11 +218,11 @@ func (m *instanceManager) updateDevice(id string, input deviceInput) (Device, er
 	defer m.mu.Unlock()
 	index := m.deviceIndexLocked(id)
 	if index < 0 {
-		return Device{}, apiError{status: http.StatusNotFound, message: "找不到此设备。"}
+		return Device{}, apiError{status: http.StatusNotFound, message: uiText("backend.device.message018")}
 	}
 	for _, instance := range m.instances {
 		if instance.DeviceID == id && (instance.PID > 0 || isActiveStatus(instance.Status)) {
-			return Device{}, apiError{status: http.StatusConflict, message: "此设备仍有运行中的服务，请先停止服务再修改连接配置。"}
+			return Device{}, apiError{status: http.StatusConflict, message: uiText("backend.device.message019")}
 		}
 	}
 	device := normalizeDeviceInput(input)
@@ -247,11 +247,11 @@ func (m *instanceManager) deleteDevice(id string) error {
 	defer m.mu.Unlock()
 	index := m.deviceIndexLocked(id)
 	if index < 0 {
-		return apiError{status: http.StatusNotFound, message: "找不到此设备。"}
+		return apiError{status: http.StatusNotFound, message: uiText("backend.device.message018")}
 	}
 	for _, instance := range m.instances {
 		if instance.DeviceID == id {
-			return apiError{status: http.StatusConflict, message: "此设备仍关联服务实例；请先删除或迁移这些实例。"}
+			return apiError{status: http.StatusConflict, message: uiText("backend.device.message020")}
 		}
 	}
 	previous := append([]Device(nil), m.devices...)
@@ -319,7 +319,7 @@ func (m *instanceManager) handleDevices(w http.ResponseWriter, r *http.Request) 
 func (m *instanceManager) handleDevice(w http.ResponseWriter, r *http.Request, path string) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 0 || !idPattern.MatchString(parts[0]) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "设备 ID 无效。"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": uiText("backend.device.message021")})
 		return
 	}
 	id := parts[0]
@@ -332,7 +332,7 @@ func (m *instanceManager) handleDevice(w http.ResponseWriter, r *http.Request, p
 		device, found := m.deviceLocked(id)
 		m.mu.Unlock()
 		if !found {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "找不到此设备。"})
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": uiText("backend.device.message018")})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
@@ -404,5 +404,5 @@ func deviceError(err error) string {
 	if err == nil {
 		return ""
 	}
-	return fmt.Sprintf("连接失败：%v", err)
+	return fmt.Sprintf(uiText("backend.device.message022"), err)
 }

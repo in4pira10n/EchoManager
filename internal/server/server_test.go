@@ -21,6 +21,8 @@ func TestAppAssetHandlerOnlyServesUIAssets(t *testing.T) {
 	writeTestAsset(t, root, "pwa.js", "service worker registration")
 	writeTestAsset(t, root, "manifest.webmanifest", "{}")
 	writeTestAsset(t, root, "offline.html", "offline page")
+	writeTestAsset(t, root, "static/i18n.js", "i18n runtime")
+	writeTestAsset(t, root, "static/strings/zh-CN.json", "{}")
 	writeTestAsset(t, root, "static/assets/notes.txt", "not a UI asset")
 
 	handler := appAssetHandler(os.DirFS(root))
@@ -35,6 +37,9 @@ func TestAppAssetHandlerOnlyServesUIAssets(t *testing.T) {
 		{path: "/pwa.js", wantStatus: http.StatusOK},
 		{path: "/manifest.webmanifest", wantStatus: http.StatusOK},
 		{path: "/offline.html", wantStatus: http.StatusOK},
+		{path: "/static/i18n.js", wantStatus: http.StatusOK},
+		{path: "/static/strings/zh-CN.json", wantStatus: http.StatusOK},
+		{path: "/static/strings/../config.json", wantStatus: http.StatusNotFound},
 		{path: "/README.md", wantStatus: http.StatusNotFound},
 		{path: "/config.json", wantStatus: http.StatusNotFound},
 		{path: "/.git/config", wantStatus: http.StatusNotFound},
@@ -55,7 +60,7 @@ func TestAppAssetHandlerOnlyServesUIAssets(t *testing.T) {
 
 func TestAppAssetHandlerServesEmbeddedAssets(t *testing.T) {
 	handler := appAssetHandler(embeddedAppAssets)
-	for _, path := range []string{"/", "/app.js", "/app.css", "/settings-config.js", "/pwa.js", "/manifest.webmanifest", "/offline.html", "/static/assets/echomanager-icon.png", "/static/assets/favicon.ico", "/static/assets/apple-touch-icon.png", "/static/assets/pwa-icon-192.png", "/static/assets/task-compass.png"} {
+	for _, path := range []string{"/", "/app.js", "/app.css", "/settings-config.js", "/static/i18n.js", "/static/strings/locales.json", "/static/strings/zh-CN.json", "/pwa.js", "/manifest.webmanifest", "/offline.html", "/static/assets/echomanager-icon.png", "/static/assets/favicon.ico", "/static/assets/apple-touch-icon.png", "/static/assets/pwa-icon-192.png", "/static/assets/task-compass.png"} {
 		t.Run(path, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, path, nil)
 			response := httptest.NewRecorder()

@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#1a1a1a">
-  <title>暂时无法连接 - EchoManager</title>
+  <title data-i18n="offline.pageTitle"></title>
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
   <link rel="stylesheet" href="/auth.css">
+  <script src="/static/i18n.js"></script>
   <style>
     .offline-card { width: min(420px, calc(100vw - 40px)); margin: auto; padding: 32px; text-align: center; border-radius: 28px; background: #333; color: #fff; }
     .offline-card img { width: 72px; height: 72px; object-fit: contain; }
@@ -19,8 +20,8 @@
 <body class="login-page" style="display:grid;min-height:100svh;place-items:center;padding:20px">
   <main class="offline-card">
     <img src="/static/assets/echomanager-icon.png" alt="">
-    <h1>EchoManager 暂时无法连接</h1>
-    <p>管理面板需要连接运行中的 EchoManager 服务。请检查网络后重新打开页面。</p>
+    <h1 data-i18n="offline.title"></h1>
+    <p data-i18n="offline.description"></p>
   </main>
 </body>
 </html>

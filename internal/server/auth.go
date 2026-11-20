@@ -133,13 +133,13 @@ func (a *authManager) findUserLocked(username string) (managerUser, bool) {
 func validateManagerCredentials(username, password string) (string, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || len(username) > 64 || strings.ContainsAny(username, "\r\n\x00") {
-		return "", errors.New("用户名不能为空，且不能超过 64 个字符")
+		return "", errors.New(uiText("backend.auth.message001"))
 	}
 	if len(password) < 6 {
-		return "", errors.New("密码至少需要 6 个字符")
+		return "", errors.New(uiText("backend.auth.message002"))
 	}
 	if len(password) > 72 {
-		return "", errors.New("密码不能超过 72 个字节")
+		return "", errors.New(uiText("backend.auth.message003"))
 	}
 	return username, nil
 }
@@ -151,12 +151,12 @@ func (a *authManager) createInitialAdmin(username, password string) error {
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("生成密码摘要失败：%w", err)
+		return fmt.Errorf(uiText("backend.auth.message004"), err)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if len(a.users) != 0 {
-		return errors.New("初始管理员已经创建，请登录后注册其他账号")
+		return errors.New(uiText("backend.auth.message005"))
 	}
 	a.users = append(a.users, managerUser{Username: username, PasswordHash: string(hash)})
 	if err := a.saveLocked(); err != nil {
@@ -172,20 +172,20 @@ func (a *authManager) registerAdmin(username, password, confirmPassword, adminUs
 		return err
 	}
 	if password != confirmPassword {
-		return errors.New("两次输入的密码不一致")
+		return errors.New(uiText("backend.auth.message006"))
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("生成密码摘要失败：%w", err)
+		return fmt.Errorf(uiText("backend.auth.message004"), err)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	admin, exists := a.findUserLocked(adminUsername)
 	if !exists || bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(adminPassword)) != nil {
-		return errors.New("管理员用户名或密码错误")
+		return errors.New(uiText("backend.auth.message007"))
 	}
 	if _, exists := a.findUserLocked(username); exists {
-		return errors.New("此用户名已被使用")
+		return errors.New(uiText("backend.auth.message008"))
 	}
 	a.users = append(a.users, managerUser{Username: username, PasswordHash: string(hash)})
 	if err := a.saveLocked(); err != nil {
@@ -200,7 +200,7 @@ func (a *authManager) login(username, password string) (string, string, error) {
 	user, exists := a.findUserLocked(username)
 	a.mu.RUnlock()
 	if !exists || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
-		return "", "", errors.New("用户名或密码错误")
+		return "", "", errors.New(uiText("backend.auth.message009"))
 	}
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
@@ -327,7 +327,7 @@ func (a *authManager) handler() http.Handler {
 		if r.URL.Path == "/api/auth/session" && r.Method == http.MethodGet {
 			username, ok := a.currentUser(r)
 			if !ok {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先登录。"})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": uiText("backend.auth.message010")})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]string{"username": username, "role": "admin"})
@@ -338,7 +338,7 @@ func (a *authManager) handler() http.Handler {
 			return
 		}
 		if !sameOriginRequest(r) {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "跨站请求已拒绝。"})
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": uiText("backend.auth.message011")})
 			return
 		}
 		switch r.URL.Path {
@@ -374,16 +374,16 @@ func (a *authManager) handler() http.Handler {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]string{"message": "管理员账号创建成功，请登录后继续。"})
+			writeJSON(w, http.StatusOK, map[string]string{"message": uiText("backend.auth.message012")})
 		case "/api/auth/logout":
 			if err := a.logout(r); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法安全结束登录会话：" + err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": uiText("backend.auth.message013") + err.Error()})
 				return
 			}
 			clearManagerSessionCookie(w, r)
-			writeJSON(w, http.StatusOK, map[string]string{"message": "已退出登录。"})
+			writeJSON(w, http.StatusOK, map[string]string{"message": uiText("backend.auth.message014")})
 		default:
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "未找到认证 API。"})
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": uiText("backend.auth.message015")})
 		}
 	})
 }

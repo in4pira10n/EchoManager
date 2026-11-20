@@ -83,7 +83,7 @@ func runTaskkill(args []string) error {
 			return ctx.Err()
 		}
 		if message := strings.TrimSpace(decodeWindowsCommandOutput(output)); message != "" {
-			return fmt.Errorf("taskkill 失败：%s: %w", message, err)
+			return fmt.Errorf(uiText("backend.process_windows.message001"), message, err)
 		}
 		return err
 	}

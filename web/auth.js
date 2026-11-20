@@ -1,4 +1,7 @@
-(function () {
+(async function () {
+  const i18nReady = window.EchoManagerI18n?.ready || Promise.resolve();
+  const t = (path) => window.EchoManagerI18n?.t(path) || path;
+  await i18nReady;
   function $(id) { return document.getElementById(id); }
 
   function preventZoom(event) { event.preventDefault(); }
@@ -24,11 +27,11 @@
     const password = $("password").value;
     const confirmation = $("confirm-password").value;
     if (!username || !password || !confirmation) {
-      error.textContent = "请完整填写注册信息。";
+      error.textContent = t("auth.fillRegistration");
       return false;
     }
     if (password !== confirmation) {
-      error.textContent = "两次输入的密码不一致。";
+      error.textContent = t("auth.passwordMismatch");
       return false;
     }
     error.textContent = "";
@@ -55,7 +58,7 @@
       payload.admin_username = adminUsername.value.trim();
       payload.admin_password = adminPassword.value;
       if (!payload.admin_username || !payload.admin_password) {
-        modalError.textContent = "请输入现有管理员用户名和密码。";
+        modalError.textContent = t("auth.existingCredentials");
         return;
       }
     }
@@ -73,11 +76,11 @@
         body: JSON.stringify(payload)
       });
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "请求失败。");
+      if (!response.ok) throw new Error(result.error || t("auth.requestFailed"));
       location.assign(result.redirect || "/login");
     } catch (requestError) {
-      if (isRegister) modalError.textContent = requestError.message || "网络错误。";
-      else error.textContent = requestError.message || "网络错误。";
+      if (isRegister) modalError.textContent = requestError.message || t("common.networkError");
+      else error.textContent = requestError.message || t("common.networkError");
       submit.disabled = false;
       if (confirmButton) confirmButton.disabled = false;
     }
@@ -92,7 +95,7 @@
     setModalOpen(true);
   }
 
-  submit.addEventListener("click", begin);
+  submit.addEventListener("click", () => { void i18nReady.then(begin); });
   if (confirmButton) confirmButton.addEventListener("click", requestAuth);
   const cancelButton = $("admin-auth-cancel");
   if (cancelButton) cancelButton.addEventListener("click", () => setModalOpen(false));

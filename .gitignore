@@ -2,6 +2,7 @@
 # the Windows application icon and is required for reproducible cross-builds.
 /EchoManager
 /EchoManager.exe
+/TheEchoAppTestBuild
 *.exe
 *.zip
 *.tar.gz

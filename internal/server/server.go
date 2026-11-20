@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net"
@@ -29,15 +30,24 @@ func Run() {
 	if managerLogFile != nil {
 		defer managerLogFile.Close()
 	}
-	manager, err := newInstanceManager(config.DataDir)
-	if err != nil {
-		log.Fatal(err)
-	}
+	fmt.Printf("✅ Config loaded. Server will run on port %s\n", config.Port)
+	fmt.Printf("🧩 EchoKit path: %s\n", config.EchoKitDir)
+	fmt.Printf("📂 Manager data: %s\n", config.DataDir)
+	fmt.Printf("⚙️ Configuration: %s\n", config.ConfigPath)
 	settings, err := newManagerSettingsStore(config.DataDir)
 	if err != nil {
 		log.Fatal(err)
 	}
+	manager, err := newInstanceManager(config.DataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	manager.settings = settings
 	runtime := newAppRuntime(config)
+	shortcuts, err := newShortcutStore(config.DataDir, manager)
+	if err != nil {
+		log.Fatal(err)
+	}
 	auth, err := newAuthManager(config.DataDir)
 	if err != nil {
 		log.Fatal(err)
@@ -51,6 +61,8 @@ func Run() {
 	mux.Handle("/api/setup", setupAPIHandler(runtime, auth))
 	mux.Handle("/api/auth/", auth.handler())
 	mux.Handle("/api/settings", settings.handler(auth))
+	mux.Handle("/api/shortcuts", shortcuts.handler(auth))
+	mux.Handle("/api/shortcuts/", shortcuts.handler(auth))
 	mux.Handle("/api/manager/shutdown", managerShutdownAPIHandler(auth, func() {
 		select {
 		case shutdownRequests <- struct{}{}:
@@ -70,20 +82,27 @@ func Run() {
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Could not start HTTP server: %v\n", err)
+		log.Fatal(err)
+	}
+	localURL := fmt.Sprintf("http://127.0.0.1:%s", config.Port)
 	log.Printf("EchoManager listening on port %s", config.Port)
-	log.Printf("Local URL: http://127.0.0.1:%s", config.Port)
+	log.Printf("Local URL: %s", localURL)
+	fmt.Printf("🌐 Local URL: %s\n", localURL)
 	if lanIP := firstLANIPv4(); lanIP != "" {
-		log.Printf("LAN URL: http://%s:%s", lanIP, config.Port)
+		lanURL := fmt.Sprintf("http://%s:%s", lanIP, config.Port)
+		log.Printf("LAN URL: %s", lanURL)
+		fmt.Printf("🌐 LAN URL: %s\n", lanURL)
 	}
 	log.Printf("Manager data: %s", config.DataDir)
 	log.Printf("Configuration: %s", config.ConfigPath)
 	if runtime.requiresSetup() {
 		log.Printf("Initialization required: open a printed URL to configure EchoKit")
+		fmt.Println("ℹ️ Initialization required. Open one of the URLs above to configure EchoKit.")
 	}
-	listener, err := net.Listen("tcp", server.Addr)
-	if err != nil {
-		log.Fatal(err)
-	}
+	fmt.Printf("✅ HTTP server started: %s\n", localURL)
 	ctx, stop := signal.NotifyContext(context.Background(), managerSignals()...)
 	defer stop()
 	go func() {
@@ -132,19 +151,27 @@ func appAssetHandler(assets fs.FS) http.Handler {
 		switch r.URL.Path {
 		case "/", "/index.html":
 			relativePath = "index.html"
-		case "/app.js", "/app.css", "/settings-config.js", "/auth.js", "/auth.css", "/pwa.js", "/manifest.webmanifest", "/offline.html":
+		case "/app.js", "/app.css", "/settings-config.js", "/auth.js", "/auth.css", "/setup.js", "/setup.css", "/static/i18n.js", "/pwa.js", "/manifest.webmanifest", "/offline.html":
 			relativePath = strings.TrimPrefix(r.URL.Path, "/")
 		default:
 			const assetPrefix = "/static/assets/"
-			if !strings.HasPrefix(r.URL.Path, assetPrefix) {
+			const stringsPrefix = "/static/strings/"
+			if strings.HasPrefix(r.URL.Path, stringsPrefix) {
+				relativePath = strings.TrimPrefix(r.URL.Path, "/")
+				if filepath.Ext(relativePath) != ".json" || strings.Contains(relativePath, "..") {
+					http.NotFound(w, r)
+					return
+				}
+			} else if !strings.HasPrefix(r.URL.Path, assetPrefix) {
 				http.NotFound(w, r)
 				return
-			}
-			relativePath = strings.TrimPrefix(r.URL.Path, "/")
-			extension := strings.ToLower(filepath.Ext(relativePath))
-			if extension != ".svg" && extension != ".png" && extension != ".ico" {
-				http.NotFound(w, r)
-				return
+			} else {
+				relativePath = strings.TrimPrefix(r.URL.Path, "/")
+				extension := strings.ToLower(filepath.Ext(relativePath))
+				if extension != ".svg" && extension != ".png" && extension != ".ico" {
+					http.NotFound(w, r)
+					return
+				}
 			}
 		}
 		w.Header().Set("Cache-Control", "no-cache")
@@ -186,6 +213,9 @@ func serveLocalAsset(w http.ResponseWriter, r *http.Request, root, relativePath 
 		http.NotFound(w, r)
 		return
 	}
+	// EchoKit is loaded directly from the configured folder. Revalidate it so
+	// component updates cannot leave a running browser on an older module.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, filepath.Join(root, filepath.FromSlash(relativePath)))
 }
 

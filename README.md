@@ -1,5 +1,7 @@
 # EchoManager
 
+[简体中文](README.zh-CN.md) · [Releases](https://github.com/in4pira10n/EchoManager/releases)
+
 EchoManager is a lightweight, local-first process manager for registering and operating long-running applications on the host machine. It is written in Go and serves a browser-based interface built with vanilla JavaScript and EchoKit.
 
 ## Repository Layout
@@ -21,6 +23,7 @@ EchoManager is a lightweight, local-first process manager for registering and op
 - Refresh instance state on demand; startup readiness is checked while a newly started process is settling.
 - Access the manager from the host or another device on the local network with an administrator account.
 - Register remote macOS / Linux devices over SSH and Windows devices over HTTPS WinRM, then manage their instances from the central Manager.
+- Run ordered shortcuts to start, stop, restart, open, or toggle instances, with optional conditions based on instance state.
 - Use the system, light, or dark appearance and a configurable accent color.
 
 EchoManager starts the configured executable directly with argument and environment arrays on the selected target device. Local processes use Go's parameterized process APIs. Remote Unix processes are launched through a generated, quoted Bash script over SSH; remote Windows processes are launched through a generated PowerShell script over WinRM. Readiness is determined by whether the configured TCP port accepts connections; the manager does not call an application-specific HTTP health endpoint.
@@ -29,7 +32,7 @@ EchoManager starts the configured executable directly with argument and environm
 
 - Go 1.24 or later.
 - Python 3 and Pillow are only needed to regenerate icon assets; see `scripts/requirements-icons.txt`.
-- A separate EchoKit checkout. EchoKit is served by EchoManager at `/kit/` and is not vendored in this repository.
+- A separate [EchoKit checkout](https://github.com/in4pira10n/EchoKit). For EchoManager v0.0.3, use EchoKit commit `f8d4a3f` or later for the refreshed SF Symbols. EchoManager serves EchoKit at `/kit/`.
 - The EchoManager web interface and its own static assets are embedded in the built executable.
 - Remote Unix-like targets need an SSH server and a `bash` shell. The Manager host must have the target host key in its own `~/.ssh/known_hosts`; host-key checking is never silently disabled.
 - Remote Windows targets need PowerShell remoting over HTTPS (WinRM, normally port `5986`). The target certificate is verified by default; skipping verification is an explicit per-device setting for trusted LAN deployments only.
@@ -39,6 +42,10 @@ Set `ECHOKIT_DIR` to select an EchoKit checkout. Otherwise, a built executable s
 On first launch, EchoManager opens an initialization page that follows the app's authentication-page layout. Enter the EchoKit root (the folder containing `css`, `components`, `tokens`, and `SFSymbols`) and create the first administrator account. After initialization, sign in with that account. Registration of additional administrator accounts requires authorization with an existing administrator's credentials. All registered accounts are administrators; visitor roles are not used. If the configured Kit path later becomes invalid, the initialization page requires an administrator login before saving a replacement path.
 
 Runtime options can also be placed in an optional `config.json` beside the executable. Copy `config.example.json` as a starting point. If no executable-side file exists, EchoManager checks the current working directory, which is useful when running from source. Relative paths in the file are resolved from the file's directory. Environment variables override file values: `ECHOKIT_DIR`, `PORT`, and `ECHOMANAGER_DATA_DIR`. If `ECHOKIT_DIR` is set but invalid, it must be corrected in the environment because environment values intentionally take precedence over the setup page's saved config. The settings page's copy, icons, options, and browser preference defaults are centralized in `web/settings-config.js` and embedded at build time; rebuild after changing them.
+
+## Install a Release
+
+Download the archive for your OS and CPU from [GitHub Releases](https://github.com/in4pira10n/EchoManager/releases), extract it, and run `EchoManager` (`EchoManager.exe` on Windows). Make the EchoKit checkout available before setup. Open `http://127.0.0.1:3000` to configure EchoKit and create your first administrator. The release page includes `SHA256SUMS.txt` for checking downloads.
 
 ## Run from Source
 
@@ -128,7 +135,8 @@ Unless `data_dir` in `config.json` or `ECHOMANAGER_DATA_DIR` is set, portable da
 - `sessions.json` — active browser sessions and their seven-day expiration times; logging out removes the session.
 - `logs/` — per-instance process output and error logs.
 - `icons/` — uploaded instance icons.
-- `settings.json` — shared application preferences, including the accent color.
+- `settings.json` — shared application preferences, including the accent color and shortcut run-warning setting.
+- `shortcuts.json` — ordered shortcut definitions, rules, actions, program references, selected colors, and SF Symbol names.
 
 On first launch after upgrading, EchoManager copies the previous per-user `EchoManager` data directory into `.echomanager-data` if the new directory does not exist. The old directory is left untouched. Keep the data folder with the executable when moving the app to another computer; the target's executable paths and device credentials still need to be valid there. The executable's containing folder must be writable, or configure `data_dir` / `ECHOMANAGER_DATA_DIR` to a writable location. Set either option to choose a different data location. Runtime data should not be committed. Existing `control.token` files are no longer read or used. Authentication is provided by the administrator login; there is no separate LAN control token.
 
@@ -143,6 +151,10 @@ On refresh, EchoManager can adopt a locally started process only when its config
 Closing EchoManager stops its web service but leaves managed processes running. Start EchoManager again and refresh task status to revalidate and adopt matching local or remote processes.
 
 ## Development Checks
+
+UI text is centralized in `web/static/strings/zh-CN.json`. See the
+[text resource guide](web/static/strings/README.md) before adding user-facing
+copy. The current catalog is Chinese only; translation can be added later.
 
 ```sh
 go test ./...

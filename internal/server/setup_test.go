@@ -58,11 +58,11 @@ func TestSetupPageIsStandaloneAndTransitionsToApp(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "EchoKit 配置") || !strings.Contains(response.Body.String(), "管理员用户名") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-i18n="setup.kitConfig"`) || !strings.Contains(response.Body.String(), `data-i18n-placeholder="auth.adminUsername"`) {
 		t.Fatalf("first visit did not serve setup page: status=%d body=%q", response.Code, response.Body.String())
 	}
 
-	for _, assetPath := range []string{"/setup.css", "/setup.js", "/settings-config.js", "/pwa.js", "/manifest.webmanifest", "/sw.js", "/offline.html", "/static/assets/echomanager-icon.png", "/static/assets/favicon.ico", "/static/assets/apple-touch-icon.png", "/static/assets/pwa-icon-192.png"} {
+	for _, assetPath := range []string{"/setup.css", "/setup.js", "/settings-config.js", "/static/i18n.js", "/static/strings/locales.json", "/static/strings/zh-CN.json", "/pwa.js", "/manifest.webmanifest", "/sw.js", "/offline.html", "/static/assets/echomanager-icon.png", "/static/assets/favicon.ico", "/static/assets/apple-touch-icon.png", "/static/assets/pwa-icon-192.png"} {
 		response = httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, assetPath, nil))
 		if response.Code != http.StatusOK || response.Body.Len() == 0 {
@@ -82,7 +82,7 @@ func TestSetupPageIsStandaloneAndTransitionsToApp(t *testing.T) {
 	}
 	request.AddCookie(&http.Cookie{Name: managerSessionCookie, Value: session})
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "管理器设置") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-i18n-aria="navigation.settingsView"`) {
 		t.Fatalf("configured visit did not serve the application: status=%d", response.Code)
 	}
 }

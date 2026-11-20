@@ -1,11 +1,14 @@
+import { resolveEchoIcon } from "/kit/components/icon.js";
 import { createEchoButton } from "/kit/components/button/index.js";
 import { createEchoLibraryCard } from "/kit/components/library-card/index.js";
 import { createEchoTabs } from "/kit/components/tab/index.js";
-import { createEchoField } from "/kit/components/input/index.js";
+import { createEchoField } from "/kit/components/input/index.js?v=20261014-select-field";
 import { createEchoModal } from "/kit/components/modal/index.js";
 import { createEchoMetric } from "/kit/components/metric/index.js";
 import { createEchoSettingRow } from "/kit/components/setting-row/index.js";
 
+await window.EchoManagerI18n?.ready;
+const t = (path, variables) => window.EchoManagerI18n?.t(path, variables) ?? path;
 const $ = (selector, root = document) => root.querySelector(selector);
 const SETTINGS_CONFIG = window.ECHO_MANAGER_SETTINGS;
 const taskList = $("#em-task-list");
@@ -14,6 +17,8 @@ const MANAGER_PREFERENCES_KEY = SETTINGS_CONFIG.storageKeys.managerPreferences;
 const SETTINGS_PANELS_KEY = SETTINGS_CONFIG.storageKeys.settingsPanels;
 const ACCENT_PREFERENCE_KEY = SETTINGS_CONFIG.storageKeys.accentColor;
 const DEFAULT_ACCENT_COLOR = SETTINGS_CONFIG.defaults.accentColor;
+const START_TIMEOUT_RANGE = SETTINGS_CONFIG.appearance.startTimeoutRange;
+const DEFAULT_START_TIMEOUT_SECONDS = SETTINGS_CONFIG.defaults.startTimeoutSeconds;
 let accentPersistTimer = 0;
 
 function loadAccentPreference() {
@@ -31,6 +36,7 @@ function loadManagerPreferences() {
     const saved = JSON.parse(localStorage.getItem(MANAGER_PREFERENCES_KEY) || "{}");
     return {
       confirmStop: typeof saved.confirmStop === "boolean" ? saved.confirmStop : defaults.confirmStop,
+      confirmShortcut: typeof saved.confirmShortcut === "boolean" ? saved.confirmShortcut : defaults.confirmShortcut,
     };
   } catch {
     return defaults;
@@ -54,7 +60,7 @@ function persistSettingsPanelState() {
   try { localStorage.setItem(SETTINGS_PANELS_KEY, JSON.stringify(state.settingsPanels)); } catch {}
 }
 
-const state = { instances: [], signature: "", devices: [], deviceSignature: "", activeId: "", expandedInstanceIds: new Set(), pendingActions: new Map(), runtimeTimer: null, currentView: 0, theme: SETTINGS_CONFIG.defaults.theme, accentColor: loadAccentPreference(), currentUser: "", modal: null, deleteModal: null, stopConfirmModal: null, logoutModal: null, managerShutdownModal: null, cropModal: null, cropCleanup: null, deviceModal: null, deviceDeleteModal: null, iconSources: new Map(), preferences: loadManagerPreferences(), settingsPanels: loadSettingsPanelState(), refreshing: false, draggingInstanceId: "", touchReorder: null, suppressCardClick: false };
+const state = { instances: [], signature: "", devices: [], deviceSignature: "", connectingDeviceIds: new Set(), probingInstanceIds: new Set(), activeId: "", expandedInstanceIds: new Set(), pendingActions: new Map(), runtimeTimer: null, currentView: 0, theme: SETTINGS_CONFIG.defaults.theme, accentColor: loadAccentPreference(), startTimeoutSeconds: DEFAULT_START_TIMEOUT_SECONDS, savedStartTimeoutSeconds: DEFAULT_START_TIMEOUT_SECONDS, currentUser: "", modal: null, deleteModal: null, stopConfirmModal: null, logoutModal: null, managerShutdownModal: null, cropModal: null, cropCleanup: null, deviceModal: null, deviceDeleteModal: null, iconSources: new Map(), preferences: loadManagerPreferences(), settingsPanels: loadSettingsPanelState(), refreshing: false, draggingInstanceId: "", touchReorder: null, suppressCardClick: false };
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
 function showFeedback(message, kind = "info") {
@@ -79,7 +85,7 @@ async function api(path, options = {}) {
   if (response.status === 204) return null;
   const payload = await response.json().catch(() => ({}));
   if (response.status === 401) window.location.assign("/login");
-  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  if (!response.ok) throw new Error(payload.error || t("common.requestFailed", { status: response.status }));
   return payload;
 }
 
@@ -98,28 +104,35 @@ function makeIconButton({ icon, label, className = "", color = null, variant = "
   });
 }
 
-function createEmptyState() {
+function createEmptyState(label = t("empty.instances"), description = "") {
   const emptyState = document.createElement("div");
   emptyState.className = "em-task-empty-state";
   emptyState.setAttribute("role", "status");
-  emptyState.setAttribute("aria-label", "暂无已登记的服务实例");
+  emptyState.setAttribute("aria-label", label);
   const icon = document.createElement("img");
-  icon.src = "/kit/SFSymbols/square.dashed.svg";
+  icon.className = "em-symbol";
+  icon.src = resolveEchoIcon("square.dashed");
   icon.alt = "";
   icon.setAttribute("aria-hidden", "true");
   emptyState.append(icon);
+  if (description) {
+    const copy = document.createElement("p");
+    copy.className = "em-task-empty-state__copy";
+    copy.textContent = description;
+    emptyState.append(copy);
+  }
   return emptyState;
 }
 
 function statusLabel(status) {
   return ({
-    stopped: "已停止",
-    starting: "启动中",
-    running: "运行中",
-    stopping: "停止中",
-    exception: "异常",
-    unavailable: "不可用",
-  })[status] || "未知状态";
+    stopped: t("status.stopped"),
+    starting: t("status.starting"),
+    running: t("status.running"),
+    stopping: t("status.stopping"),
+    exception: t("status.exception"),
+    unavailable: t("status.unavailable"),
+  })[status] || t("common.unknownStatus");
 }
 
 function cardActions(instance) {
@@ -137,19 +150,19 @@ function cardActions(instance) {
   actions.append(
     makeIconButton({
       icon: action === "stop" ? "stop.fill" : "play.fill",
-      label: action === "stop" ? "停止" : "启动",
+      label: action === "stop" ? t("common.stop") : t("common.start"),
       color: action === "stop" ? "red" : "blue",
       className: `em-task-action em-task-action--${action}`,
       disabled: actionBusy || (action === "start" ? instance.status === "unavailable" : !processOwned && !remoteMayBeAdopted),
       onClick: (event) => runAction(instance, action, event),
     }),
     makeIconButton({
-      icon: "pencil", label: "编辑", color: "green", className: "em-task-action em-task-action--edit",
+      icon: "pencil", label: t("common.edit"), color: "green", className: "em-task-action em-task-action--edit",
       disabled: isActive || processOwned,
       onClick: () => openInstanceEditor(instance),
     }),
     makeIconButton({
-      icon: "arrow.turn.up.right", label: "打开页面", color: "gray", className: "em-task-action em-task-action--open",
+      icon: "arrow.turn.up.right", label: t("common.openPage"), color: "gray", className: "em-task-action em-task-action--open",
       disabled: instance.status !== "running",
       onClick: () => openInstancePage(instance),
     }),
@@ -159,14 +172,14 @@ function cardActions(instance) {
 
 function formatRuntime(startedAt) {
   const start = Date.parse(startedAt || "");
-  if (!Number.isFinite(start)) return "未运行";
+  if (!Number.isFinite(start)) return t("common.notRunning");
   const totalSeconds = Math.max(0, Math.floor((Date.now() - start) / 1000));
   const days = Math.floor(totalSeconds / 86_400);
   const hours = Math.floor((totalSeconds % 86_400) / 3_600);
   const minutes = Math.floor((totalSeconds % 3_600) / 60);
   const seconds = totalSeconds % 60;
   const clock = [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
-  return days ? `${days}天 ${clock}` : clock;
+  return days ? t("instance.runtimeDays", { days, clock }) : clock;
 }
 
 function createInstanceDetails(instance) {
@@ -180,16 +193,16 @@ function createInstanceDetails(instance) {
   const running = instance.pid > 0;
   const runtime = createEchoMetric({
     icon: "clock",
-    label: "运行时长",
-    value: running ? formatRuntime(instance.startedAt) : "未运行",
+    label: t("instance.runtime"),
+    value: running ? formatRuntime(instance.startedAt) : t("common.notRunning"),
   });
   if (running && instance.startedAt) runtime.dataset.runtimeStartedAt = instance.startedAt;
 
   metrics.append(
-    createEchoMetric({ icon: "waveform.path.ecg", label: "运行状态", value: statusLabel(instance.status) }),
+    createEchoMetric({ icon: "waveform.path.ecg", label: t("instance.state"), value: statusLabel(instance.status) }),
     runtime,
-    createEchoMetric({ icon: "number", label: "进程 PID", value: instance.pid ? `PID ${instance.pid}` : "未分配" }),
-    createEchoMetric({ icon: "network", label: "服务端口", value: `端口 ${instance.actualPort || instance.configuredPort}` }),
+    createEchoMetric({ icon: "number", label: t("instance.pid"), value: instance.pid ? t("instance.pidValue", { pid: instance.pid }) : t("common.notAssigned") }),
+    createEchoMetric({ icon: "network", label: t("instance.port"), value: t("common.portValue", { port: instance.actualPort || instance.configuredPort }) }),
   );
   details.append(metrics);
 
@@ -304,7 +317,7 @@ function openInstancePage(instance) {
   const remote = instance.deviceId && instance.deviceId !== "local";
   const rawHost = remote ? instance.deviceAddress : (window.location.hostname || "127.0.0.1");
   if (!rawHost) {
-    showFeedback("目标设备没有可用地址，无法打开服务页面。", "error");
+    showFeedback(t("instance.openPageUnavailable"), "error");
     return;
   }
   const normalizedHost = String(rawHost).trim().replace(/^\[|\]$/g, "");
@@ -321,7 +334,9 @@ function beginTaskReorder(instanceID, card) {
   state.signature = "";
 }
 
-function moveTaskCardAtPoint(card, clientX, clientY) {
+function moveTaskCardAtPoint(clientX, clientY) {
+  const card = [...taskList.children].find((item) => item.dataset.instanceId === state.draggingInstanceId);
+  if (!card) return;
   const target = document.elementFromPoint(clientX, clientY)?.closest(".em-task-card")
     || document.elementFromPoint(window.innerWidth / 2, clientY)?.closest(".em-task-card");
   if (!target || target === card || target.parentElement !== taskList) return;
@@ -362,8 +377,8 @@ function finishTaskReorder(card, instanceID) {
       renderInstances(state.instances);
     })
     .catch((error) => {
-      showFeedback(error.message || "任务顺序保存失败。", "error");
-      void refreshInstances(true);
+      showFeedback(error.message || t("instance.orderSaveFailed"), "error");
+      void loadInstances(true);
     });
 }
 
@@ -372,12 +387,12 @@ function installTaskReordering(card, instance) {
     if (!state.draggingInstanceId || state.draggingInstanceId === instance.id) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    moveTaskCardAtPoint(card, event.clientX, event.clientY);
+    moveTaskCardAtPoint(event.clientX, event.clientY);
   });
   card.addEventListener("drop", (event) => {
     if (!state.draggingInstanceId) return;
     event.preventDefault();
-    moveTaskCardAtPoint(card, event.clientX, event.clientY);
+    moveTaskCardAtPoint(event.clientX, event.clientY);
   });
 
   card.addEventListener("touchstart", (event) => {
@@ -404,7 +419,7 @@ function installTaskReordering(card, instance) {
     }
     event.preventDefault();
     const touch = event.touches[0];
-    if (touch) moveTaskCardAtPoint(card, touch.clientX, touch.clientY);
+    if (touch) moveTaskCardAtPoint(touch.clientX, touch.clientY);
   }, { passive: false });
   const finishTouchReorder = () => {
     const pending = state.touchReorder;
@@ -424,7 +439,7 @@ function installTaskReordering(card, instance) {
 
 function renderInstances(instances) {
   $("#em-current-origin").textContent = window.location.origin;
-  $("#em-instance-count").textContent = `${instances.length}${SETTINGS_CONFIG.copy.manager.instanceCountSuffix}`;
+  $("#em-instance-count").textContent = t("common.serviceCount", { count: instances.length });
   const signature = instanceRenderSignature(instances);
   if (state.draggingInstanceId) {
     state.signature = "";
@@ -438,7 +453,7 @@ function renderInstances(instances) {
     state.expandedInstanceIds.clear();
     for (const cached of state.iconSources.values()) URL.revokeObjectURL(cached.objectURL);
     state.iconSources.clear();
-    taskList.append(createEmptyState());
+    taskList.append(createEmptyState(t("empty.instances"), t("empty.instancesHint")));
     syncRuntimeTimer();
     return;
   }
@@ -460,7 +475,7 @@ function renderInstances(instances) {
       logo: "/static/assets/task-compass.png",
       icon: "app.badge",
       title: instance.name,
-      addition: `${instance.deviceName || "本机"} · ${instance.executablePath}`,
+      addition: `${instance.deviceName || t("common.local")} · ${instance.executablePath}`,
       attachment: [],
       content: [() => cardActions(instance)],
       active: state.activeId === instance.id,
@@ -498,6 +513,7 @@ function renderInstances(instances) {
         card.setAttribute("aria-expanded", String(expanded));
         toggleInstanceDetails(card, instance, expanded);
         syncRuntimeTimer();
+        if (instance.deviceId && instance.deviceId !== "local") void refreshInstanceOnDemand(instance);
       },
     });
     card.classList.add("em-task-card");
@@ -521,9 +537,11 @@ function renderInstances(instances) {
       details.style.opacity = "1";
       card.append(details);
     }
-    card.setAttribute("aria-label", `${instance.name}，${statusLabel(instance.status)}，端口 ${instance.configuredPort}，${instance.executablePath}`);
+    const connecting = state.probingInstanceIds.has(instance.id);
+    const visibleStatus = connecting ? t("status.connecting") : statusLabel(instance.status);
+    card.setAttribute("aria-label", t("instance.aria", { name: instance.name, status: visibleStatus, port: instance.configuredPort, path: instance.executablePath }));
     card.querySelector(".echo-library-card__name")?.setAttribute("data-port", String(instance.configuredPort));
-    card.querySelector(".echo-library-card__name")?.insertAdjacentHTML("afterend", `<span class="em-status em-status--${escapeAttribute(instance.status)}">${escapeHTML(statusLabel(instance.status))}</span>`);
+    card.querySelector(".echo-library-card__name")?.insertAdjacentHTML("afterend", `<span class="em-status em-status--${connecting ? "connecting" : escapeAttribute(instance.status)}">${escapeHTML(visibleStatus)}</span>`);
     loadTaskIcon(instance).then((iconURL) => {
       if (!iconURL || !card.isConnected) return;
       const image = card.querySelector(".echo-library-card__logo img");
@@ -537,7 +555,7 @@ function renderInstances(instances) {
 
 function instanceRenderSignature(instances) {
   const pendingActions = [...state.pendingActions.entries()].sort(([left], [right]) => left.localeCompare(right));
-  return JSON.stringify({ instances, pendingActions });
+  return JSON.stringify({ instances, pendingActions, probingInstanceIds: [...state.probingInstanceIds].sort() });
 }
 
 async function loadTaskIcon(instance) {
@@ -550,14 +568,14 @@ async function loadTaskIcon(instance) {
   }
   try {
     const response = await fetch(instance.iconURL, { credentials: "same-origin", cache: "force-cache" });
-    if (!response.ok) throw new Error(`读取任务图标失败 (${response.status})`);
+    if (!response.ok) throw new Error(t("error.readTaskIconWithStatus", { status: response.status }));
     const objectURL = URL.createObjectURL(await response.blob());
     const existing = state.iconSources.get(instance.id);
     if (existing) URL.revokeObjectURL(existing.objectURL);
     state.iconSources.set(instance.id, { url: instance.iconURL, objectURL });
     return objectURL;
   } catch (error) {
-    console.warn("读取任务图标失败", error);
+    console.warn(t("error.readTaskIcon"), error);
     return null;
   }
 }
@@ -572,8 +590,8 @@ function installTaskIconPicker(trigger, instance) {
   trigger.classList.add("em-task-logo-editable");
   trigger.tabIndex = 0;
   trigger.setAttribute("role", "button");
-  trigger.setAttribute("aria-label", `更换${instance.name}的图标`);
-  trigger.title = "点击更换任务图标";
+  trigger.setAttribute("aria-label", t("instance.changeIcon", { name: instance.name }));
+  trigger.title = t("instance.changeIconTitle");
   const openPicker = (event) => {
     event?.preventDefault();
     event?.stopPropagation();
@@ -586,11 +604,11 @@ function installTaskIconPicker(trigger, instance) {
       picker.remove();
       if (!file) return;
       if (!file.type.startsWith("image/")) {
-        showFeedback("请选择图片文件。", "error");
+        showFeedback(t("error.chooseImage"), "error");
         return;
       }
       if (file.size > 20 * 1024 * 1024) {
-        showFeedback("图片不能超过 20 MiB。", "error");
+        showFeedback(t("error.imageTooLarge"), "error");
         return;
       }
       openTaskIconCrop(instance, file, trigger);
@@ -613,15 +631,15 @@ function openTaskIconCrop(instance, file, trigger) {
   content.className = "em-icon-crop-content";
   const stage = document.createElement("div");
   stage.className = "em-icon-crop-stage";
-  stage.setAttribute("aria-label", "拖动图片调整任务图标构图");
+  stage.setAttribute("aria-label", t("instance.cropAria"));
   const image = document.createElement("img");
-  image.alt = "任务图标裁剪预览";
+  image.alt = t("instance.cropPreview");
   stage.append(image);
 
   const rangeLabel = document.createElement("label");
   rangeLabel.className = "em-icon-crop-range-label";
   rangeLabel.htmlFor = "em-icon-crop-zoom";
-  rangeLabel.textContent = "缩放";
+  rangeLabel.textContent = t("instance.zoom");
   const range = document.createElement("input");
   range.id = "em-icon-crop-zoom";
   range.type = "range";
@@ -634,16 +652,16 @@ function openTaskIconCrop(instance, file, trigger) {
   zoomValue.textContent = "100%";
   const toolbar = document.createElement("div");
   toolbar.className = "em-icon-crop-toolbar";
-  const zoomOut = makeIconButton({ icon: "minus", label: "缩小", className: "em-icon-crop-tool em-icon-crop-tool--zoom-out" });
-  const zoomIn = makeIconButton({ icon: "plus", label: "放大", className: "em-icon-crop-tool" });
-  const reset = makeIconButton({ icon: "arrow.counterclockwise", label: "重置", className: "em-icon-crop-tool" });
+  const zoomOut = makeIconButton({ icon: "minus", label: t("instance.zoomOut"), className: "em-icon-crop-tool" });
+  const zoomIn = makeIconButton({ icon: "plus", label: t("instance.zoomIn"), className: "em-icon-crop-tool" });
+  const reset = makeIconButton({ icon: "arrow.counterclockwise", label: t("instance.reset"), className: "em-icon-crop-tool" });
   const rangeGroup = document.createElement("div");
   rangeGroup.className = "em-icon-crop-range";
   rangeGroup.append(rangeLabel, range, zoomValue);
   toolbar.append(zoomOut, rangeGroup, zoomIn, reset);
   const hint = document.createElement("p");
   hint.className = "em-icon-crop-hint";
-  hint.textContent = "拖动图片调整位置，也可用滑杆或双指缩放；图标将以圆形显示。";
+  hint.textContent = t("instance.cropHint");
   content.append(stage, toolbar, hint);
 
   let cropModal;
@@ -694,13 +712,13 @@ function openTaskIconCrop(instance, file, trigger) {
     state.cropModal = null;
     cropModal?.echoModal?.destroy();
   };
-  const cancel = makeTextAction({ label: "取消", icon: "xmark", color: "gray", onClick: closeCrop });
-  const save = makeTextAction({ label: "使用图标", icon: "checkmark", color: "blue", onClick: saveCrop });
+  const cancel = makeTextAction({ label: t("common.cancel"), icon: "xmark", color: "gray", onClick: closeCrop });
+  const save = makeTextAction({ label: t("instance.useIcon"), icon: "checkmark", color: "blue", onClick: saveCrop });
   cropModal = createEchoModal({
     id: "em-icon-crop-modal",
     icon: "photo",
-    title: "裁剪任务图标",
-    addition: "拖动并缩放图片，裁剪为正方形图标。",
+    title: t("instance.cropTitle"),
+    addition: t("instance.cropAddition"),
     content,
     actions: [cancel, save],
     className: "em-icon-crop-modal",
@@ -715,7 +733,7 @@ function openTaskIconCrop(instance, file, trigger) {
     apply();
   }, { once: true });
   image.addEventListener("error", () => {
-    showFeedback("无法读取所选图片。", "error");
+    showFeedback(t("error.imageReadFailed"), "error");
     closeCrop();
   }, { once: true });
   image.src = objectURL;
@@ -793,7 +811,7 @@ function openTaskIconCrop(instance, file, trigger) {
       canvas.width = size;
       canvas.height = size;
       const context = canvas.getContext("2d");
-      if (!context) throw new Error("无法创建图片裁剪画布。");
+      if (!context) throw new Error(t("error.canvasFailed"));
       context.drawImage(image, sourceX, sourceY, cropSize, cropSize, 0, 0, size, size);
       const iconData = canvas.toDataURL("image/png");
       const updated = await api(`/api/instances/${instance.id}/icon`, { method: "POST", body: JSON.stringify({ iconData }) });
@@ -802,10 +820,10 @@ function openTaskIconCrop(instance, file, trigger) {
       const triggerImage = trigger?.querySelector("img");
       if (iconURL && triggerImage) triggerImage.src = iconURL;
       closeCrop();
-      showFeedback("任务图标已更新。", "success");
-      await refreshInstances(true);
+      showFeedback(t("instance.iconUpdated"), "success");
+      await loadInstances(true);
     } catch (error) {
-      showFeedback(error.message || "任务图标更新失败。", "error");
+      showFeedback(error.message || t("instance.iconUpdateFallback"), "error");
       save.disabled = false;
     }
   }
@@ -832,7 +850,7 @@ async function refreshInstances(silent = false, instanceID = "") {
           pid: previous.pid || updated.pid,
           actualPort: previous.actualPort || updated.actualPort,
           startedAt: previous.startedAt || updated.startedAt,
-          error: previous.error || "正在等待远端启动确认…",
+          error: previous.error || t("instance.waitingRemote"),
         };
       }
       if (state.pendingActions.get(updated.id) === "start" && updated.pid > 0) {
@@ -850,6 +868,39 @@ async function refreshInstances(silent = false, instanceID = "") {
       const signature = instanceRenderSignature(state.instances);
       if (signature !== state.signature) renderInstances(state.instances);
     }
+  }
+}
+
+async function loadInstances(silent = false) {
+  try {
+    const response = await api("/api/instances");
+    state.instances = response.instances || [];
+    renderInstances(state.instances);
+    return true;
+  } catch (error) {
+    if (!silent) showFeedback(error.message, "error");
+    return false;
+  }
+}
+
+async function refreshInstanceOnDemand(instance) {
+  if (!instance?.id || state.probingInstanceIds.has(instance.id)) return;
+  const deviceID = instance.deviceId;
+  state.probingInstanceIds.add(instance.id);
+  state.connectingDeviceIds.add(deviceID);
+  state.signature = "";
+  state.deviceSignature = "";
+  renderInstances(state.instances);
+  renderDevices(state.devices);
+  try {
+    if (!await refreshInstances(true, instance.id)) await loadInstances(true);
+  } finally {
+    state.probingInstanceIds.delete(instance.id);
+    state.connectingDeviceIds.delete(deviceID);
+    state.signature = "";
+    state.deviceSignature = "";
+    renderInstances(state.instances);
+    await refreshDevices(true);
   }
 }
 
@@ -879,10 +930,10 @@ async function runAction(instance, action, event) {
 async function performAction(instance, action, button) {
   if (button) button.disabled = true;
   state.pendingActions.set(instance.id, action);
-  showFeedback(action === "start" ? `正在启动 ${instance.name}，等待端口就绪…` : `正在停止 ${instance.name}…`, "info");
+  showFeedback(action === "start" ? t("instance.starting", { name: instance.name }) : t("instance.stopping", { name: instance.name }), "info");
   updateInstanceState(instance.id, {
     status: action === "start" ? "starting" : "stopping",
-    error: action === "start" ? "等待目标服务端口就绪…" : "正在停止远程进程…",
+    error: action === "start" ? t("instance.waitingPort") : t("instance.stoppingRemote"),
   });
   let startRequestPending = false;
   let startRefreshLoop = null;
@@ -912,14 +963,14 @@ async function performAction(instance, action, button) {
       const settled = await waitForStartup(instance.id);
       if (state.pendingActions.get(instance.id) === "stop") return;
       if (settled?.status === "running") {
-        showFeedback(`${instance.name} 已运行。`, "success");
-      } else if (settled?.status === "starting") showFeedback(`${instance.name} 仍在启动；可稍后手动刷新状态。`, "info");
-      else if (settled?.status === "exception" || settled?.status === "unavailable") showFeedback(settled.error || `${instance.name} 启动失败。`, "error");
-      else if (settled) showFeedback(`${instance.name} 当前状态：${statusLabel(settled.status)}。`, "info");
-      else showFeedback(`${instance.name} 已提交启动请求，但暂时无法读取最新状态。`, "info");
+        showFeedback(t("instance.running", { name: instance.name }), "success");
+      } else if (settled?.status === "starting") showFeedback(t("instance.stillStarting", { name: instance.name }), "info");
+      else if (settled?.status === "exception" || settled?.status === "unavailable") showFeedback(settled.error || t("instance.startFailed", { name: instance.name }), "error");
+      else if (settled) showFeedback(t("instance.currentState", { name: instance.name, status: statusLabel(settled.status) }), "info");
+      else showFeedback(t("instance.submitted", { name: instance.name }), "info");
       return;
     }
-    showFeedback(`${instance.name} 已停止。`, "success");
+    showFeedback(t("instance.stoppedMessage", { name: instance.name }), "success");
   } catch (error) {
     startRequestPending = false;
     if (startRefreshLoop) await startRefreshLoop;
@@ -929,7 +980,7 @@ async function performAction(instance, action, button) {
       if (state.pendingActions.get(instance.id) === "stop") return;
       const current = state.instances.find((item) => item.id === instance.id);
       if (current?.status === "running") {
-        showFeedback(`${instance.name} 已运行。`, "success");
+        showFeedback(t("instance.running", { name: instance.name }), "success");
         return;
       }
     }
@@ -1003,15 +1054,15 @@ function openManagerShutdownConfirmation(sourceButton) {
   dismissManagerShutdownConfirmation();
   const content = document.createElement("p");
   content.className = "em-delete-confirm-copy";
-  content.textContent = "关闭后，EchoManager 将停止响应所有设备的访问；已经启动的服务进程会继续运行。";
+  content.textContent = t("instance.managerShutdownDescription");
   const cancel = makeTextAction({
-    label: "取消",
+    label: t("common.cancel"),
     icon: "xmark",
     color: "gray",
     onClick: dismissManagerShutdownConfirmation,
   });
   const confirm = makeTextAction({
-    label: "关闭 EchoManager",
+    label: t("navigation.shutdown"),
     icon: "power",
     color: "red",
     onClick: async (_event, button) => {
@@ -1019,7 +1070,7 @@ function openManagerShutdownConfirmation(sourceButton) {
       try {
         await api("/api/manager/shutdown", { method: "POST" });
         dismissManagerShutdownConfirmation();
-        showFeedback("EchoManager 正在关闭；已启动的服务进程会继续运行。", "info");
+        showFeedback(t("instance.managerShutdownInfo"), "info");
       } catch (error) {
         button.disabled = false;
         showFeedback(error.message, "error");
@@ -1029,8 +1080,8 @@ function openManagerShutdownConfirmation(sourceButton) {
   state.managerShutdownModal = createEchoModal({
     id: "em-manager-shutdown-modal",
     icon: "power",
-    title: "关闭 EchoManager",
-    addition: "此操作会停止管理服务，不会停止已启动的服务进程。",
+    title: t("navigation.shutdown"),
+    addition: t("instance.managerShutdownAddition"),
     content,
     actions: [cancel, confirm],
     className: "em-confirm-modal",
@@ -1051,15 +1102,15 @@ function openLogoutConfirmation(sourceButton) {
   dismissLogoutConfirmation();
   const content = document.createElement("p");
   content.className = "em-delete-confirm-copy";
-  content.textContent = "确定退出当前管理员账号吗？";
+  content.textContent = t("instance.logoutDescription");
   const cancel = makeTextAction({
-    label: "取消",
+    label: t("common.cancel"),
     icon: "xmark",
     color: "gray",
     onClick: dismissLogoutConfirmation,
   });
   const confirm = makeTextAction({
-    label: "退出登录",
+    label: t("instance.logoutTitle"),
     icon: "arrow.turn.up.right",
     color: "blue",
     onClick: async (_event, button) => {
@@ -1077,8 +1128,8 @@ function openLogoutConfirmation(sourceButton) {
   state.logoutModal = createEchoModal({
     id: "em-logout-confirm-modal",
     icon: "info.circle",
-    title: "退出登录",
-    addition: "退出后需要重新登录才能继续管理服务。",
+    title: t("instance.logoutTitle"),
+    addition: t("instance.logoutAddition"),
     content,
     actions: [cancel, confirm],
     className: "em-confirm-modal",
@@ -1099,15 +1150,15 @@ function openStopConfirmation(instance, sourceButton) {
   dismissStopConfirmation();
   const content = document.createElement("p");
   content.className = "em-delete-confirm-copy";
-  content.textContent = `确定停止“${instance.name}”吗？停止后，该服务将暂时无法访问。`;
+  content.textContent = t("instance.stopDescription", { name: instance.name });
   const cancel = makeTextAction({
-    label: "取消",
+    label: t("common.cancel"),
     icon: "xmark",
     color: "gray",
     onClick: dismissStopConfirmation,
   });
   const stop = makeTextAction({
-    label: "停止服务",
+    label: t("common.stop"),
     icon: "stop.fill",
     color: "red",
     onClick: () => {
@@ -1118,8 +1169,8 @@ function openStopConfirmation(instance, sourceButton) {
   state.stopConfirmModal = createEchoModal({
     id: "em-stop-instance-modal",
     icon: "exclamationmark.triangle",
-    title: "停止服务",
-    addition: "请确认是否中断此服务。",
+    title: t("instance.stopTitle"),
+    addition: t("instance.stopAddition"),
     content,
     actions: [cancel, stop],
     className: "em-confirm-modal",
@@ -1148,16 +1199,16 @@ function openDeleteConfirmation(instance) {
   state.deleteModal?.echoModal?.destroy();
   const content = document.createElement("p");
   content.className = "em-delete-confirm-copy";
-  content.textContent = `确定删除“${instance.name}”的管理登记吗？程序文件和运行日志会保留。`;
+  content.textContent = t("instance.deleteDescription", { name: instance.name });
   const cancel = makeTextAction({
-    label: "取消",
+    label: t("common.cancel"),
     icon: "xmark",
     color: "gray",
     onClick: () => dismissDeleteConfirmation(true),
   });
   let remove;
   remove = makeTextAction({
-    label: "删除实例",
+    label: t("editor.delete"),
     icon: "trash",
     color: "red",
     onClick: () => deleteInstance(instance, remove),
@@ -1165,8 +1216,8 @@ function openDeleteConfirmation(instance) {
   state.deleteModal = createEchoModal({
     id: "em-delete-instance-modal",
     icon: "/static/assets/task-compass.png",
-    title: "删除服务实例",
-    addition: "此操作只移除 EchoManager 中的登记。",
+    title: t("instance.deleteTitle"),
+    addition: t("instance.deleteAddition"),
     content,
     actions: [cancel, remove],
     className: "em-confirm-modal",
@@ -1198,11 +1249,11 @@ async function deleteInstance(instance, button) {
     state.modal?.echoModal?.destroy();
     state.modal = null;
     dismissDeleteConfirmation(false);
-    showFeedback(`${instance.name} 已从管理器移除。`, "success");
-    await refreshInstances(true);
+    showFeedback(t("instance.removed", { name: instance.name }), "success");
+    await loadInstances(true);
   } catch (error) {
     showFeedback(error.message, "error");
-    await refreshInstances(true);
+    await loadInstances(true);
     if (button) button.disabled = false;
   }
 }
@@ -1217,9 +1268,9 @@ function parseEnvironment(value) {
   for (const item of items) {
     if (!item.trim()) continue;
     const separator = item.indexOf("=");
-    if (separator < 1) throw new Error(`环境变量格式错误：${item}（需要 KEY=value）`);
+    if (separator < 1) throw new Error(t("error.environmentFormat", { item }));
     const key = item.slice(0, separator).trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`环境变量名称无效：${key}`);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(t("error.environmentName", { key }));
     result[key] = item.slice(separator + 1);
   }
   return result;
@@ -1230,34 +1281,19 @@ function field(options) {
 }
 
 function selectField({ label, name, options = [], value = "", hint = "", className = "" }) {
-  const wrapper = document.createElement("label");
-  wrapper.className = ["echo-field", "em-select-field", className].filter(Boolean).join(" ");
-  const labelNode = document.createElement("span");
-  labelNode.className = "echo-field__label";
-  labelNode.textContent = label;
-  const select = document.createElement("select");
-  select.className = "echo-input";
-  select.name = name || "";
-  for (const option of options) {
-    const optionNode = document.createElement("option");
-    optionNode.value = String(option.value);
-    optionNode.textContent = option.label;
-    optionNode.selected = String(option.value) === String(value);
-    select.append(optionNode);
-  }
-  wrapper.append(labelNode, select);
-  if (hint) {
-    const hintNode = document.createElement("span");
-    hintNode.className = "echo-field__hint";
-    hintNode.textContent = hint;
-    wrapper.append(hintNode);
-  }
-  wrapper.echoField = { input: select };
-  return wrapper;
+  return createEchoField({
+    type: "select",
+    label,
+    name,
+    options,
+    value: String(value),
+    hint,
+    className,
+  });
 }
 
 function deviceStatusLabel(status) {
-  return ({ online: "在线", offline: "离线", unknown: "未测试" })[status] || "未知";
+  return ({ online: t("status.online"), offline: t("status.offline"), unknown: t("status.untested") })[status] || t("common.unknown");
 }
 
 function deviceIconName(device) {
@@ -1270,7 +1306,7 @@ function deviceIconName(device) {
 }
 
 function formatDeviceEndpoint(device) {
-  if (!device?.address) return "没有地址";
+  if (!device?.address) return t("common.noAddress");
   const address = String(device.address).includes(":") ? `[${device.address}]` : device.address;
   const port = device.transport === "local" ? "" : `:${device.port || (device.transport === "winrm" ? 5986 : 22)}`;
   return `${address}${port}`;
@@ -1282,32 +1318,34 @@ function createDeviceCard(device) {
   card.className = "em-network-device";
   if (device.id === "local") card.classList.add("em-network-device--local");
   card.dataset.deviceId = device.id;
-  card.title = device.error || (device.id === "local" ? "本机无需远程连接配置" : "点击编辑设备");
+  card.title = device.error || (device.id === "local" ? t("instance.deviceTitleLocal") : t("instance.deviceTitleEdit"));
 
   const icon = document.createElement("span");
   icon.className = "em-network-device-icon";
   const image = document.createElement("img");
   const iconName = deviceIconName(device);
-  image.src = `/kit/SFSymbols/${iconName}.svg`;
+  image.className = "em-symbol-on-color";
+  image.src = resolveEchoIcon(iconName);
   if (iconName === "macmini.gen3.fill") {
     image.addEventListener("error", () => {
-      image.src = "/kit/SFSymbols/macmini.fill.svg";
+      image.src = resolveEchoIcon("macmini.fill");
     }, { once: true });
   }
   image.alt = "";
   icon.append(image);
 
   const name = document.createElement("strong");
-  name.textContent = device.id === "local" ? `${device.name || "本机"}（本机）` : device.name;
+  name.textContent = device.id === "local" ? t("common.localSuffix", { name: device.name || t("common.local") }) : device.name;
   const endpoint = document.createElement("small");
   endpoint.textContent = formatDeviceEndpoint(device);
   const meta = document.createElement("small");
   meta.className = "em-network-device-meta";
-  meta.textContent = `${device.instanceCount || 0} 个服务 · ${deviceStatusLabel(device.status)}`;
+  const deviceStatus = state.connectingDeviceIds.has(device.id) ? t("status.connecting") : deviceStatusLabel(device.status);
+  meta.textContent = `${t("common.serviceCount", { count: device.instanceCount || 0 })} · ${deviceStatus}`;
   card.append(icon, name, endpoint, meta);
   card.addEventListener("click", () => {
     if (device.id === "local") {
-      showFeedback("本机设备由 EchoManager 自动管理，无需连接配置。", "info");
+      showFeedback(t("instance.localDeviceInfo"), "info");
       return;
     }
     openDeviceEditor(device);
@@ -1318,8 +1356,8 @@ function createDeviceCard(device) {
 function renderDevices(devices) {
   const rail = $("#em-network-device-rail");
   if (!rail) return;
-  $("#em-network-count").textContent = `当前共 ${devices.length} 台设备`;
-  const signature = JSON.stringify(devices);
+  $("#em-network-count").textContent = t("common.deviceCount", { count: devices.length });
+  const signature = JSON.stringify({ devices, connecting: [...state.connectingDeviceIds].sort() });
   if (signature === state.deviceSignature) return;
   state.deviceSignature = signature;
   rail.replaceChildren(...devices.map(createDeviceCard));
@@ -1328,7 +1366,7 @@ function renderDevices(devices) {
     const addButton = document.createElement("button");
     addButton.type = "button";
     addButton.className = "em-settings-action em-network-add-button";
-    addButton.textContent = "添加设备";
+    addButton.textContent = t("device.add");
     addButton.addEventListener("click", () => openDeviceEditor());
     addAction.replaceChildren(addButton);
   }
@@ -1346,11 +1384,55 @@ async function refreshDevices(silent = false) {
   }
 }
 
+async function probeDevice(device, { announce = false } = {}) {
+  if (!device?.id || device.id === "local" || state.connectingDeviceIds.has(device.id)) return false;
+  state.connectingDeviceIds.add(device.id);
+  state.deviceSignature = "";
+  renderDevices(state.devices);
+  try {
+    const response = await api(`/api/devices/${device.id}/test`, { method: "POST" });
+    if (response?.id) {
+      state.devices = state.devices.map((item) => item.id === response.id ? response : item);
+      state.deviceSignature = "";
+      renderDevices(state.devices);
+    }
+    if (announce) showFeedback(t("instance.deviceConnected", { name: device.name }), "success");
+    return true;
+  } catch (error) {
+    if (announce) showFeedback(error.message, "error");
+    await refreshDevices(true);
+    return false;
+  } finally {
+    state.connectingDeviceIds.delete(device.id);
+    state.deviceSignature = "";
+    renderDevices(state.devices);
+  }
+}
+
+async function probeDevices() {
+  const devices = state.devices.filter((device) => device.id !== "local" && !state.connectingDeviceIds.has(device.id));
+  devices.forEach((device) => state.connectingDeviceIds.add(device.id));
+  state.deviceSignature = "";
+  renderDevices(state.devices);
+  await Promise.all(devices.map(async (device) => {
+    try {
+      const response = await api(`/api/devices/${device.id}/test`, { method: "POST" });
+      if (response?.id) state.devices = state.devices.map((item) => item.id === response.id ? response : item);
+    } catch {
+      await refreshDevices(true);
+    } finally {
+      state.connectingDeviceIds.delete(device.id);
+      state.deviceSignature = "";
+      renderDevices(state.devices);
+    }
+  }));
+}
+
 function deviceOptions() {
-  const devices = state.devices.length ? state.devices : [{ id: "local", name: "本机", platform: "unix", transport: "local" }];
+  const devices = state.devices.length ? state.devices : [{ id: "local", name: t("common.local"), platform: "unix", transport: "local" }];
   return devices.map((device) => ({
     value: device.id,
-    label: device.id === "local" ? `${device.name || "本机"}（本机）` : `${device.name} · ${device.address}`,
+    label: device.id === "local" ? t("common.localSuffix", { name: device.name || t("common.local") }) : t("device.remoteLabel", { name: device.name, address: device.address }),
   }));
 }
 
@@ -1362,9 +1444,9 @@ function checkboxControl(label, checked = false) {
   input.checked = checked;
   const copy = document.createElement("span");
   const title = document.createElement("strong");
-  title.textContent = "跳过 WinRM 证书验证";
+  title.textContent = t("device.skipTLS");
   const detail = document.createElement("small");
-  detail.textContent = "仅限可信局域网";
+  detail.textContent = t("device.trustedLAN");
   copy.append(title, detail);
   const track = document.createElement("span");
   track.className = "em-settings-switch-track";
@@ -1387,10 +1469,10 @@ function openDeviceDeleteConfirmation(device) {
   dismissDeviceDeleteConfirmation(false);
   const content = document.createElement("p");
   content.className = "em-delete-confirm-copy";
-  content.textContent = `确定删除“${device.name}”吗？这只会移除设备登记，不会修改目标电脑。`;
-  const cancel = makeTextAction({ label: "取消", icon: "xmark", color: "gray", onClick: () => dismissDeviceDeleteConfirmation(true) });
+  content.textContent = t("instance.deviceDeleteDescription", { name: device.name });
+  const cancel = makeTextAction({ label: t("common.cancel"), icon: "xmark", color: "gray", onClick: () => dismissDeviceDeleteConfirmation(true) });
   const remove = makeTextAction({
-    label: "删除设备",
+    label: t("instance.deviceDeleteTitle"),
     icon: "trash",
     color: "red",
     onClick: async (_event, button) => {
@@ -1400,7 +1482,7 @@ function openDeviceDeleteConfirmation(device) {
         state.deviceModal?.echoModal?.destroy();
         state.deviceModal = null;
         dismissDeviceDeleteConfirmation(false);
-        showFeedback(`${device.name} 已移除。`, "success");
+        showFeedback(t("instance.deviceRemoved", { name: device.name }), "success");
         await refreshDevices(true);
       } catch (error) {
         button.disabled = false;
@@ -1412,8 +1494,8 @@ function openDeviceDeleteConfirmation(device) {
   state.deviceDeleteModal = createEchoModal({
     id: "em-delete-device-modal",
     icon: "trash",
-    title: "删除设备",
-    addition: "运行中的实例或已关联实例的设备不能删除。",
+    title: t("instance.deviceDeleteTitle"),
+    addition: t("instance.deviceDeleteAddition"),
     content,
     actions: [cancel, remove],
     className: "em-confirm-modal",
@@ -1442,26 +1524,26 @@ function openDeviceEditor(device = null) {
   content.className = "em-form-content em-device-form-content";
   const connectionFields = document.createElement("div");
   connectionFields.className = "em-form-grid";
-  controls.name = field({ label: "设备名称", name: "name", placeholder: "例如：客厅 Windows", required: true, value: values.name });
-  controls.address = field({ label: "设备地址", name: "address", placeholder: "192.168.1.4 或主机名", required: true, value: values.address });
-  controls.platform = selectField({ label: "目标系统", name: "platform", value: values.platform, options: [{ value: "unix", label: "macOS / Linux" }, { value: "windows", label: "Windows" }] });
-  controls.transport = selectField({ label: "连接方式", name: "transport", value: values.transport, options: [{ value: "ssh", label: "SSH" }, { value: "winrm", label: "HTTPS WinRM" }] });
-  controls.port = field({ label: "连接端口", name: "port", type: "number", value: values.port, attributes: { min: "1", max: "65535", inputmode: "numeric" } });
-  controls.username = field({ label: "登录用户名", name: "username", value: values.username, autocomplete: "username", required: true });
-  controls.authType = selectField({ label: "SSH 认证", name: "authType", value: values.authType, options: [{ value: "password", label: "密码" }, { value: "key", label: "私钥文件" }] });
-  controls.password = field({ label: "密码", name: "password", type: "password", autocomplete: "new-password", hint: editing ? "留空以继续使用已保存密码。" : "凭据仅保存在 EchoManager 主机的数据目录。" });
-  controls.keyPath = field({ label: "SSH 私钥路径", name: "keyPath", placeholder: "/Users/name/.ssh/id_ed25519", value: values.keyPath, hint: "这是 Manager 主机上的路径。" });
-  controls.insecureTLS = checkboxControl("跳过 WinRM 证书验证（仅限可信局域网）", Boolean(device?.insecureTLS));
+  controls.name = field({ label: t("device.name"), name: "name", placeholder: t("device.namePlaceholder"), required: true, value: values.name });
+  controls.address = field({ label: t("device.address"), name: "address", placeholder: t("device.addressPlaceholder"), required: true, value: values.address });
+  controls.platform = selectField({ label: t("device.platform"), name: "platform", value: values.platform, options: [{ value: "unix", label: t("device.macLinux") }, { value: "windows", label: t("device.windows") }] });
+  controls.transport = selectField({ label: t("device.transport"), name: "transport", value: values.transport, options: [{ value: "ssh", label: t("device.ssh") }, { value: "winrm", label: t("device.winrm") }] });
+  controls.port = field({ label: t("device.port"), name: "port", type: "number", value: values.port, attributes: { min: "1", max: "65535", inputmode: "numeric" } });
+  controls.username = field({ label: t("device.username"), name: "username", value: values.username, autocomplete: "username", required: true });
+  controls.authType = selectField({ label: t("device.auth"), name: "authType", value: values.authType, options: [{ value: "password", label: t("device.password") }, { value: "key", label: t("device.key") }] });
+  controls.password = field({ label: t("device.password"), name: "password", type: "password", autocomplete: "new-password", hint: editing ? t("device.passwordHintEdit") : t("device.passwordHintNew") });
+  controls.keyPath = field({ label: t("device.keyPath"), name: "keyPath", placeholder: t("device.keyPathPlaceholder"), value: values.keyPath, hint: t("device.keyPathHint") });
+  controls.insecureTLS = checkboxControl(t("device.skipTLSLabel"), Boolean(device?.insecureTLS));
   connectionFields.append(controls.name, controls.address, controls.platform, controls.transport, controls.port, controls.username, controls.authType, controls.password, controls.keyPath, controls.insecureTLS);
   const testRow = document.createElement("div");
   testRow.className = "em-device-test-row";
   const testButton = document.createElement("button");
   testButton.type = "button";
   testButton.className = "em-settings-action em-device-test-action";
-  testButton.textContent = "测试连接";
+  testButton.textContent = t("device.test");
   testButton.addEventListener("click", () => {
     if (!editing) {
-      showFeedback("请先保存设备，再测试连接。", "info");
+      showFeedback(t("device.testFirst"), "info");
       return;
     }
     void testDevice(device, testButton);
@@ -1469,17 +1551,17 @@ function openDeviceEditor(device = null) {
   testRow.append(testButton);
   content.append(connectionFields, testRow);
 
-  const cancel = makeTextAction({ label: "取消", icon: "xmark", color: "gray", onClick: () => state.deviceModal?.echoModal?.close() });
-  const save = makeTextAction({ label: editing ? "保存修改" : "添加设备", icon: "checkmark", color: "blue", onClick: () => saveDevice() });
+  const cancel = makeTextAction({ label: t("common.cancel"), icon: "xmark", color: "gray", onClick: () => state.deviceModal?.echoModal?.close() });
+  const save = makeTextAction({ label: editing ? t("device.save") : t("device.add"), icon: "checkmark", color: "blue", onClick: () => saveDevice() });
   const actions = editing ? [cancel, save] : [cancel, save];
   if (editing) {
-    actions.splice(1, 0, makeTextAction({ label: "删除设备", icon: "trash", color: "red", onClick: () => openDeviceDeleteConfirmation(device) }));
+    actions.splice(1, 0, makeTextAction({ label: t("instance.deviceDeleteTitle"), icon: "trash", color: "red", onClick: () => openDeviceDeleteConfirmation(device) }));
   }
   state.deviceModal = createEchoModal({
     id: "em-device-modal",
     icon: "network",
-    title: editing ? "编辑设备" : "添加设备",
-    addition: "Manager 通过 SSH 或 HTTPS WinRM 控制目标电脑上的进程。",
+    title: editing ? t("device.edit") : t("device.add"),
+    addition: t("device.description"),
     content,
     actions,
     className: editing ? "em-editor-modal em-editor-modal--editing em-device-modal" : "em-editor-modal em-device-modal",
@@ -1518,7 +1600,7 @@ function openDeviceEditor(device = null) {
   async function saveDevice() {
     try {
       const port = Number(controls.port.echoField.input.value);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("连接端口必须在 1–65535 范围内。");
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(t("device.invalidPort"));
       const payload = {
         name: controls.name.echoField.input.value,
         address: controls.address.echoField.input.value,
@@ -1534,9 +1616,9 @@ function openDeviceEditor(device = null) {
       save.disabled = true;
       await api(editing ? `/api/devices/${device.id}` : "/api/devices", { method: editing ? "PUT" : "POST", body: JSON.stringify(payload) });
       state.deviceModal.echoModal.close();
-      showFeedback(editing ? "设备配置已保存。" : "设备已添加。", "success");
+      showFeedback(editing ? t("device.saved") : t("device.added"), "success");
       await refreshDevices(true);
-      await refreshInstances(true);
+      await loadInstances(true);
     } catch (error) {
       showFeedback(error.message, "error");
     } finally {
@@ -1546,14 +1628,13 @@ function openDeviceEditor(device = null) {
 }
 
 async function testDevice(device, button) {
+  if (state.connectingDeviceIds.has(device.id)) {
+    showFeedback(t("instance.deviceConnecting", { name: device.name }), "info");
+    return;
+  }
   button.disabled = true;
   try {
-    await api(`/api/devices/${device.id}/test`, { method: "POST" });
-    showFeedback(`${device.name} 连接成功。`, "success");
-    await refreshDevices(true);
-  } catch (error) {
-    showFeedback(error.message, "error");
-    await refreshDevices(true);
+    await probeDevice(device, { announce: true });
   } finally {
     button.disabled = false;
   }
@@ -1576,29 +1657,31 @@ function openInstanceEditor(instance = null) {
   content.className = "em-form-content";
   const basicFields = document.createElement("div");
   basicFields.className = "em-form-grid";
-  controls.name = field({ label: "显示名称", name: "name", placeholder: "服务名称", required: true, value: values.name });
-  controls.device = selectField({ label: "运行设备", name: "deviceId", value: values.deviceId, options: deviceOptions(), hint: "本机直接运行；其他设备通过已配置的 SSH / WinRM 控制。" });
-  controls.path = field({ label: "程序路径（绝对路径）", name: "executablePath", placeholder: "可执行文件的完整路径", required: true, value: values.executablePath, hint: "填写可执行文件本身，不是所在目录。" });
-  controls.port = field({ label: "服务端口", name: "configuredPort", type: "number", value: values.configuredPort, attributes: { min: "1", max: "65535", inputmode: "numeric" } });
-  controls.args = field({ label: "启动参数", name: "arguments", value: values.arguments, hint: "用空格分隔，如：--port 8080 --host 0.0.0.0" });
-  controls.env = field({ label: "环境变量", name: "environment", value: values.environment, hint: "用空格或逗号分隔，格式为 KEY=value" });
+  controls.name = field({ label: t("editor.displayName"), name: "name", placeholder: t("editor.serviceNamePlaceholder"), required: true, value: values.name });
+  controls.device = selectField({ label: t("editor.device"), name: "deviceId", value: values.deviceId, options: deviceOptions(), hint: t("editor.deviceHint") });
+  controls.path = field({ label: t("editor.path"), name: "executablePath", placeholder: t("editor.pathPlaceholder"), required: true, value: values.executablePath, hint: t("editor.pathHint") });
+  controls.port = field({ label: t("instance.port"), name: "configuredPort", type: "number", value: values.configuredPort, attributes: { min: "1", max: "65535", inputmode: "numeric" } });
+  controls.args = field({ label: t("editor.arguments"), name: "arguments", value: values.arguments, hint: t("editor.argumentsHint") });
+  controls.env = field({ label: t("editor.environment"), name: "environment", value: values.environment, hint: t("editor.environmentHint") });
   basicFields.append(controls.name, controls.device, controls.path, controls.port);
   const advanced = document.createElement("details");
   advanced.className = "em-advanced-settings";
-  advanced.innerHTML = '<summary><span>高级设置</span><img src="/kit/SFSymbols/chevron.down.svg" alt="" aria-hidden="true"></summary>';
+  advanced.innerHTML = '<summary><span></span><img class="em-symbol" alt="" aria-hidden="true"></summary>';
+  $("summary img", advanced).src = resolveEchoIcon("chevron.down");
+  advanced.querySelector("span").textContent = t("editor.advanced");
   const advancedFields = document.createElement("div");
   advancedFields.className = "em-form-grid em-advanced-settings-fields";
   advancedFields.append(controls.args, controls.env);
   advanced.append(advancedFields);
   content.append(basicFields, advanced);
 
-  const cancel = makeTextAction({ label: "取消", icon: "xmark", color: "gray", onClick: () => state.modal.echoModal.close() });
-  const save = makeTextAction({ label: editing ? "保存修改" : "添加实例", icon: "checkmark", color: "blue", onClick: () => saveInstance() });
+  const cancel = makeTextAction({ label: t("common.cancel"), icon: "xmark", color: "gray", onClick: () => state.modal.echoModal.close() });
+  const save = makeTextAction({ label: editing ? t("device.save") : t("navigation.addInstance"), icon: "checkmark", color: "blue", onClick: () => saveInstance() });
   const actions = editing ? [cancel] : [cancel, save];
   if (editing) {
     let deleteAction;
     deleteAction = makeTextAction({
-      label: "删除实例",
+      label: t("editor.delete"),
       icon: "trash",
       color: "red",
       className: "em-editor-delete-action",
@@ -1610,8 +1693,8 @@ function openInstanceEditor(instance = null) {
   state.modal = createEchoModal({
     id: "em-instance-modal",
     icon: "/static/assets/default-task-icon.png",
-    title: editing ? "编辑服务实例" : "添加服务实例",
-    addition: "管理程序启动配置，不会修改它自己的数据文件。",
+    title: editing ? t("editor.editTitle") : t("editor.addTitle"),
+    addition: t("editor.addition"),
     content,
     actions,
     className: editing ? "em-editor-modal em-editor-modal--editing" : "em-editor-modal",
@@ -1637,7 +1720,7 @@ function openInstanceEditor(instance = null) {
   async function saveInstance() {
     try {
       const port = Number(controls.port.echoField.input.value);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("端口必须在 1–65535 范围内。");
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(t("error.invalidPort"));
       const payload = {
         name: controls.name.echoField.input.value,
         deviceId: controls.device.echoField.input.value === "local" ? "" : controls.device.echoField.input.value,
@@ -1652,8 +1735,8 @@ function openInstanceEditor(instance = null) {
         body: JSON.stringify(payload),
       });
       state.modal.echoModal.close();
-      showFeedback(editing ? "实例配置已保存。" : "实例已添加。", "success");
-      await refreshInstances(true);
+      showFeedback(editing ? t("editor.saved") : t("editor.added"), "success");
+      await loadInstances(true);
     } catch (error) {
       showFeedback(error.message, "error");
     } finally {
@@ -1669,36 +1752,272 @@ function makeTextAction({ label, icon, color, className = "", onClick }) {
 const tabs = createEchoTabs({
   id: "em-mode-switch",
   className: "em-mode-switch",
-  ariaLabel: "EchoManager 页面",
+  ariaLabel: t("navigation.page"),
   activeId: 0,
   items: [
-    { icon: "waveform.path.ecg", iconActive: "waveform.path.ecg", ariaLabel: "实例", title: "实例" },
-    { icon: "gear", iconActive: "gear", ariaLabel: "设置", title: "设置" },
+    { icon: "waveform.path.ecg", iconActive: "waveform.path.ecg", ariaLabel: t("navigation.instances"), title: t("navigation.instances") },
+    { icon: "bolt.fill", iconActive: "bolt.fill", ariaLabel: t("navigation.shortcuts"), title: t("navigation.shortcuts") },
+    { icon: "gear", iconActive: "gear", ariaLabel: t("navigation.settings"), title: t("navigation.settings") },
   ],
   onChange: (index) => setView(index),
 });
 $(".em-mode-switch").replaceWith(tabs);
 
-function settingsCopy(path) {
-  return path.split(".").reduce((value, key) => value?.[key], SETTINGS_CONFIG.copy);
+let shortcutItems = [];
+let shortcutRuns = {};
+let shortcutModal = null;
+let shortcutPoll = 0;
+let shortcutDrag = null;
+let shortcutSuppressUntil = 0;
+
+function shortcutGradient(color) {
+  return `linear-gradient(145deg, color-mix(in oklch, ${color} 90%, white), color-mix(in oklch, ${color} 68%, black))`;
+}
+
+async function refreshShortcuts() {
+  try {
+    const response = await api("/api/shortcuts");
+    shortcutItems = response.shortcuts || [];
+    shortcutRuns = response.runs || {};
+    if (!shortcutDrag) renderShortcuts();
+    window.clearTimeout(shortcutPoll);
+    if (Object.values(shortcutRuns).some((run) => run.status === "running")) shortcutPoll = window.setTimeout(() => void refreshShortcuts(), 1000);
+    return true;
+  } catch (error) { showFeedback(error.message, "error"); return false; }
+}
+
+function renderShortcuts() {
+  const list = $("#em-shortcut-list");
+  list.replaceChildren();
+  list.classList.toggle("em-shortcut-list--empty", !shortcutItems.length);
+  if (!shortcutItems.length) {
+    list.append(createEmptyState(t("empty.shortcuts"), t("empty.shortcutsHint")));
+    return;
+  }
+  for (const item of shortcutItems) {
+    const card = document.createElement("article");
+    card.className = "em-shortcut-card";
+    card.dataset.id = item.id;
+    card.style.background = shortcutGradient(item.color);
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", t("shortcut.runAria", { name: item.name }));
+    card.draggable = window.matchMedia("(pointer: fine)").matches;
+    const icon = document.createElement("img");
+    icon.className = "em-symbol-on-color";
+    icon.src = resolveEchoIcon({ sfSymbol: item.icon });
+    icon.alt = "";
+    icon.draggable = false;
+    icon.addEventListener("error", () => { icon.src = resolveEchoIcon("bolt.fill"); }, { once: true });
+    const title = document.createElement("h2");
+    title.textContent = item.name;
+    title.title = item.name;
+    const edit = makeIconButton({ icon: "ellipsis", label: t("shortcut.editing", { name: item.name }), className: "em-shortcut-edit", onClick: (event) => { event.stopPropagation(); openShortcutEditor(item); } });
+    edit.draggable = false;
+    edit.addEventListener("pointerdown", (event) => event.stopPropagation());
+    const run = shortcutRuns[item.id];
+    const status = document.createElement("span");
+    status.className = "em-shortcut-status";
+    status.textContent = run?.status === "running" ? t("shortcut.running", { completed: run.completed, total: run.total }) : run?.status === "failed" ? t("shortcut.failedRetry") : "";
+    card.setAttribute("aria-busy", String(run?.status === "running"));
+    card.append(icon, edit, title, status);
+    card.addEventListener("click", () => { if (Date.now() > shortcutSuppressUntil && !shortcutDrag) requestShortcutRun(item); });
+    card.addEventListener("keydown", (event) => { if (event.target === card && ["Enter", " "].includes(event.key)) { event.preventDefault(); requestShortcutRun(item); } });
+    card.addEventListener("dragstart", (event) => {
+      if (event.target.closest("button")) { event.preventDefault(); return; }
+      shortcutDrag = card; card.classList.add("is-dragging"); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id);
+    });
+    card.addEventListener("dragend", () => void finishShortcutReorder());
+    let pressTimer = 0;
+    let origin = null;
+    card.addEventListener("touchstart", (event) => {
+      if (event.target.closest("button") || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      origin = { x: touch.clientX, y: touch.clientY };
+      pressTimer = window.setTimeout(() => { shortcutDrag = card; card.classList.add("is-dragging"); }, 320);
+    }, { passive: true });
+    card.addEventListener("touchmove", (event) => {
+      if (!origin) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      if (!shortcutDrag && Math.hypot(touch.clientX - origin.x, touch.clientY - origin.y) > 8) window.clearTimeout(pressTimer);
+      if (shortcutDrag === card) { event.preventDefault(); moveShortcutAtPoint(touch.clientX, touch.clientY); }
+    }, { passive: false });
+    const release = () => { window.clearTimeout(pressTimer); origin = null; if (shortcutDrag === card) void finishShortcutReorder(); };
+    card.addEventListener("touchend", release);
+    card.addEventListener("touchcancel", release);
+    list.append(card);
+  }
+}
+
+function moveShortcutAtPoint(x, y) {
+  if (!shortcutDrag) return;
+  const list = $("#em-shortcut-list");
+  const target = [...list.children].find((card) => {
+    const rect = card.getBoundingClientRect();
+    return card !== shortcutDrag && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  });
+  if (!target) return;
+  const children = [...list.children];
+  list.insertBefore(shortcutDrag, children.indexOf(shortcutDrag) < children.indexOf(target) ? target.nextSibling : target);
+}
+
+async function finishShortcutReorder() {
+  if (!shortcutDrag) return;
+  shortcutDrag.classList.remove("is-dragging"); shortcutDrag = null;
+  shortcutSuppressUntil = Date.now() + 500;
+  const ids = [...$("#em-shortcut-list").children].map((card) => card.dataset.id);
+  if (ids.join() === shortcutItems.map((item) => item.id).join()) return;
+  try { await api("/api/shortcuts/order", { method: "PUT", body: JSON.stringify({ ids }) }); }
+  catch (error) { showFeedback(error.message, "error"); }
+  await refreshShortcuts();
+}
+
+$("#em-shortcut-list").addEventListener("dragover", (event) => { if (shortcutDrag) { event.preventDefault(); moveShortcutAtPoint(event.clientX, event.clientY); } });
+$("#em-shortcut-list").addEventListener("drop", (event) => { if (shortcutDrag) { event.preventDefault(); void finishShortcutReorder(); } });
+
+function shortcutDialog(options) {
+  shortcutModal?.echoModal.destroy();
+  shortcutModal = createEchoModal({ ...options, className: options.className || "em-editor-modal", overlayClassName: "em-editor-overlay" });
+  shortcutModal.classList.add("em-editor-overlay");
+  $("#em-modal-root").append(shortcutModal);
+  shortcutModal.echoModal.open();
+  return shortcutModal;
+}
+
+function requestShortcutRun(item) {
+  if (shortcutRuns[item.id]?.status === "running") return;
+  if (!state.preferences.confirmShortcut) { void runShortcut(item); return; }
+  const content = document.createElement("div");
+  content.className = "em-form-content";
+  const labels = { start: t("common.start"), stop: t("common.stop"), restart: t("common.restart"), toggle: t("shortcut.toggleAction"), open: t("common.openPage") };
+  for (const step of item.steps) {
+    const row = document.createElement("p");
+    row.textContent = t("shortcut.stepSummary", {
+      action: labels[step.action],
+      name: state.instances.find((instance) => instance.id === step.instanceId)?.name || t("ui.deletedProgram"),
+      condition: step.rule === "always" ? "" : t(step.rule === "running" ? "shortcut.runningCondition" : "shortcut.stoppedCondition"),
+    });
+    content.append(row);
+  }
+  const dialog = shortcutDialog({ icon: "bolt.fill", title: t("shortcut.runTitle", { name: item.name }), addition: t("shortcut.runAddition"), content, actions: [
+    makeTextAction({ label: t("common.cancel"), icon: "xmark", color: "gray", onClick: () => dialog.echoModal.close() }),
+    makeTextAction({ label: t("shortcut.run"), icon: "play.fill", color: "blue", onClick: () => { dialog.echoModal.close(); void runShortcut(item); } }),
+  ] });
+}
+
+async function runShortcut(item) {
+  // Reserve browser windows during the user gesture; asynchronous callbacks cannot reliably open them.
+  const pages = new Map();
+  for (const step of item.steps.filter((step) => step.action === "open")) {
+    if (!pages.has(step.instanceId)) {
+      const page = window.open("about:blank", "_blank");
+      if (page) page.opener = null;
+      pages.set(step.instanceId, page);
+    }
+  }
+  try {
+    await api(`/api/shortcuts/${item.id}/run`, { method: "POST" });
+    shortcutRuns[item.id] = { status: "running", completed: 0, total: item.steps.length };
+    renderShortcuts();
+    const poll = async () => {
+      const response = await api("/api/shortcuts");
+      shortcutItems = response.shortcuts || []; shortcutRuns = response.runs || {};
+      if (!shortcutDrag) renderShortcuts();
+      const result = shortcutRuns[item.id];
+      if (result?.status === "running") { window.setTimeout(() => void poll().catch(failed), 700); return; }
+      await loadInstances(true);
+      for (const [id, page] of pages) {
+        if (!page) continue;
+        const instance = state.instances.find((candidate) => candidate.id === id);
+        if (!result?.openIds?.includes(id) || !instance) { page.close(); continue; }
+        const host = instance.deviceId && instance.deviceId !== "local" ? instance.deviceAddress : location.hostname;
+        if (!host) { page.close(); continue; }
+        const normalized = host.replace(/^\[|\]$/g, "");
+        page.location = `${location.protocol}//${normalized.includes(":") ? `[${normalized}]` : normalized}:${instance.actualPort || instance.configuredPort}`;
+      }
+      showFeedback(result?.status === "failed" ? result.messages.at(-1) : t("shortcut.completed", { name: item.name }), result?.status === "failed" ? "error" : "success");
+    };
+    await poll();
+  } catch (error) { failed(error); }
+  function failed(error) { for (const page of pages.values()) page?.close(); showFeedback(t("shortcut.statusReadFailed", { error: error.message }), "error"); }
+}
+
+function openShortcutEditor(item = null) {
+  const content = document.createElement("div"); content.className = "em-form-content";
+  const basic = document.createElement("div"); basic.className = "em-form-grid";
+  const name = field({ label: t("shortcut.name"), value: item?.name || "", required: true });
+  const icon = field({ label: t("shortcut.icon"), value: item?.icon || "bolt.fill", placeholder: t("shortcut.iconPlaceholder"), hint: t("shortcut.iconHint") });
+  const color = field({ label: t("shortcut.color"), value: item?.color || "#a0efe3", placeholder: t("shortcut.colorPlaceholder"), hint: t("shortcut.colorHint") });
+  color.classList.add("em-shortcut-color-field");
+  const swatch = document.createElement("input"); swatch.type = "color"; swatch.className = "echo-modal__color-picker"; swatch.value = item?.color || "#a0efe3"; swatch.setAttribute("aria-label", t("shortcut.colorPicker"));
+  swatch.addEventListener("input", () => { color.echoField.input.value = swatch.value; });
+  color.echoField.input.addEventListener("input", () => { if (/^#[0-9a-f]{6}$/i.test(color.echoField.input.value)) swatch.value = color.echoField.input.value; });
+  color.append(swatch); basic.append(name, icon, color);
+  const steps = document.createElement("div"); steps.className = "em-shortcut-steps";
+  const rows = [];
+  const count = document.createElement("span"); count.className = "em-shortcut-step-count";
+  const add = makeIconButton({ icon: "plus", label: t("shortcut.addStep"), className: "em-shortcut-step-control", onClick: () => { if (rows.length < 50) addStep(); } });
+  const toolbar = document.createElement("div"); toolbar.className = "em-shortcut-step-toolbar";
+  toolbar.append(count, add);
+  function updateStepControls() {
+    count.textContent = t("shortcut.steps", { count: rows.length });
+    add.disabled = rows.length >= 50;
+    rows.forEach((entry, index) => {
+      const label = t("shortcut.removeStep", { index: index + 1 });
+      entry.remove.disabled = rows.length <= 1;
+      entry.remove.setAttribute("aria-label", label);
+      entry.remove.setAttribute("title", label);
+    });
+  }
+  function addStep(value = {}) {
+    if (rows.length >= 50) return;
+    const program = selectField({ label: t("shortcut.program"), value: value.instanceId || "", className: "em-shortcut-step-program", options: [{ value: "", label: t("shortcut.programPlaceholder") }, ...state.instances.map((instance) => ({ value: instance.id, label: `${instance.name} · ${instance.deviceName || t("common.local")}` })), ...(value.instanceId && !state.instances.some((instance) => instance.id === value.instanceId) ? [{ value: value.instanceId, label: t("shortcut.deletedProgram") }] : [])] });
+    const action = selectField({ label: t("shortcut.action"), value: value.action || "start", options: [{ value: "start", label: t("common.start") }, { value: "stop", label: t("common.stop") }, { value: "toggle", label: t("common.toggle") }, { value: "restart", label: t("common.restart") }, { value: "open", label: t("common.openPage") }] });
+    const rule = selectField({ label: t("shortcut.rule"), value: value.rule || "always", options: [{ value: "always", label: t("shortcut.always") }, { value: "running", label: t("shortcut.onlyRunning") }, { value: "stopped", label: t("shortcut.onlyStopped") }] });
+    const entry = { program, action, rule, remove: null };
+    const remove = makeIconButton({ icon: "minus", label: t("shortcut.removeStep", { index: rows.length + 1 }), className: "em-shortcut-step-control em-shortcut-step-remove", disabled: rows.length === 0, onClick: () => {
+      const index = rows.indexOf(entry);
+      if (index < 0 || rows.length <= 1) return;
+      rows.splice(index, 1);
+      program.remove(); action.remove(); rule.remove(); remove.remove();
+      updateStepControls();
+    } });
+    entry.remove = remove;
+    rows.push(entry);
+    steps.append(program, action, rule, remove);
+    updateStepControls();
+  }
+  (item?.steps || [{}]).forEach(addStep);
+  const note = document.createElement("p"); note.className = "echo-field__hint"; note.textContent = t("shortcut.toggleNote");
+  content.append(basic, note, steps, toolbar);
+  let dialog;
+  const save = makeTextAction({ label: t("common.save"), icon: "checkmark", color: "blue", onClick: async () => {
+    const payload = { name: name.echoField.input.value.trim(), icon: icon.echoField.input.value.trim().replace(/\.svg$/, ""), color: color.echoField.input.value.trim(), steps: rows.map(({ program, action, rule }) => ({ instanceId: program.echoField.input.value, action: action.echoField.input.value, rule: rule.echoField.input.value })) };
+    save.disabled = true;
+    try {
+      if (!/^[a-z0-9][a-z0-9._-]{0,119}$/i.test(payload.icon)) throw new Error(t("error.shortcutIconInvalid"));
+      const response = await fetch(resolveEchoIcon({ sfSymbol: payload.icon }), { method: "HEAD" });
+      if (!response.ok) throw new Error(t("error.shortcutIconNotFound"));
+      await api(item ? `/api/shortcuts/${item.id}` : "/api/shortcuts", { method: item ? "PUT" : "POST", body: JSON.stringify(payload) });
+      dialog.echoModal.close(); await refreshShortcuts(); showFeedback(t("shortcut.saved"), "success");
+    } catch (error) { showFeedback(error.message, "error"); } finally { save.disabled = false; }
+  } });
+  const actions = [makeTextAction({ label: t("common.cancel"), icon: "xmark", color: "gray", onClick: () => dialog.echoModal.close() })];
+  if (item) actions.push(makeTextAction({ label: t("common.delete"), icon: "trash", color: "red", onClick: () => {
+    const confirmation = createEchoModal({ icon: "trash", title: t("shortcut.deleteTitle", { name: item.name }), addition: t("shortcut.deleteAddition"), className: "em-editor-modal", actions: [
+      makeTextAction({ label: t("common.cancel"), color: "gray", onClick: () => confirmation.echoModal.destroy() }),
+      makeTextAction({ label: t("common.delete"), color: "red", onClick: async () => { try { await api(`/api/shortcuts/${item.id}`, { method: "DELETE" }); confirmation.echoModal.destroy(); dialog.echoModal.close(); await refreshShortcuts(); } catch (error) { showFeedback(error.message, "error"); } } }),
+    ] }); confirmation.classList.add("em-editor-overlay"); $("#em-modal-root").append(confirmation); confirmation.echoModal.open();
+  } }));
+  actions.push(save);
+  dialog = shortcutDialog({ icon: item?.icon || "bolt.fill", title: item ? t("shortcut.editTitle") : t("navigation.addShortcut"), addition: t("shortcut.addition"), content, actions, className: `em-editor-modal em-shortcut-editor-modal${item ? " em-editor-modal--editing" : ""}` });
 }
 
 function applySettingsConfig() {
-  document.querySelectorAll("[data-settings-copy]").forEach((element) => {
-    const value = settingsCopy(element.dataset.settingsCopy);
-    if (typeof value === "string") element.textContent = value;
-  });
-  document.querySelectorAll("[data-settings-aria-copy]").forEach((element) => {
-    const value = settingsCopy(element.dataset.settingsAriaCopy);
-    if (typeof value === "string") element.setAttribute("aria-label", value);
-  });
-  document.querySelectorAll("[data-settings-title-copy]").forEach((element) => {
-    const value = settingsCopy(element.dataset.settingsTitleCopy);
-    if (typeof value === "string") element.setAttribute("title", value);
-  });
   document.querySelectorAll("[data-em-theme]").forEach((button) => {
     const option = SETTINGS_CONFIG.appearance.themeOptions.find(({ id }) => id === button.dataset.emTheme);
-    if (option) button.textContent = option.label;
+    if (option) button.textContent = t(option.key);
   });
 
 }
@@ -1732,14 +2051,22 @@ function initializeSettingsPanels() {
 function setView(index) {
   state.currentView = index;
   $("#em-task-view").hidden = index !== 0;
-  $("#em-settings-view").hidden = index !== 1;
-  $("#em-add-action").hidden = index !== 0;
-  const inTaskView = index === 0;
-  $("#em-refresh-container").hidden = !inTaskView && index !== 1;
-  $("#em-refresh-container").setAttribute("aria-label", inTaskView ? "刷新任务状态" : "关闭 EchoManager");
+  $("#em-shortcut-view").hidden = index !== 1;
+  $("#em-settings-view").hidden = index !== 2;
+  $("#em-add-action").hidden = index === 2;
+  $(".em-floating-actions--left").setAttribute("aria-label", index === 1 ? t("navigation.addShortcut") : t("navigation.addInstance"));
+  const inTaskView = index !== 2;
+  $("#em-refresh-container").hidden = false;
+  const refreshLabel = index === 1 ? t("navigation.refreshShortcuts") : inTaskView ? t("navigation.refreshTasks") : t("navigation.shutdown");
+  $("#em-refresh-container").setAttribute("aria-label", refreshLabel);
+  refreshButton.setAttribute("aria-label", refreshLabel);
+  refreshButton.title = refreshLabel;
   refreshButton.hidden = !inTaskView;
-  shutdownButton.hidden = index !== 1;
-  if (index === 1) void refreshDevices(true);
+  shutdownButton.hidden = index !== 2;
+  if (index === 1) void refreshShortcuts();
+  if (index === 2) {
+    void refreshDevices(true).then((loaded) => loaded && state.currentView === 2 ? probeDevices() : undefined);
+  }
 }
 
 function setTheme(preference) {
@@ -1766,15 +2093,63 @@ function setAccentColor(value, { persist = true } = {}) {
   if (picker) picker.value = state.accentColor;
   const description = $("#em-accent-description");
   if (description) description.textContent = state.accentColor === DEFAULT_ACCENT_COLOR
-    ? SETTINGS_CONFIG.appearance.systemAccentDescription
-    : SETTINGS_CONFIG.appearance.customAccentDescription;
+    ? t("settings.systemAccentDescription")
+    : t("settings.customAccentDescription");
   try { localStorage.setItem(ACCENT_PREFERENCE_KEY, state.accentColor); } catch {}
   if (!persist) return;
   window.clearTimeout(accentPersistTimer);
   accentPersistTimer = window.setTimeout(() => {
     void api("/api/settings", { method: "PUT", body: JSON.stringify({ accentColor: state.accentColor }) })
-      .catch((error) => showFeedback(`主色保存失败：${error.message}`, "error"));
+      .catch((error) => showFeedback(t("settings.accentSaveFailed", { error: error.message }), "error"));
   }, 300);
+}
+
+function updateRangeProgress(input) {
+  if (!input || input.type !== "range") return;
+  const min = Number(input.min || 0);
+  const max = Number(input.max || 100);
+  const value = Math.min(max, Math.max(min, Number(input.value) || min));
+  const progress = max > min ? ((value - min) / (max - min)) * 100 : 100;
+  input.style.setProperty("--range-progress", `${progress}%`);
+}
+
+function setStartTimeoutSeconds(value) {
+  const min = START_TIMEOUT_RANGE.minSeconds;
+  const max = START_TIMEOUT_RANGE.maxSeconds;
+  const seconds = Math.min(max, Math.max(min, Math.round(Number(value) || DEFAULT_START_TIMEOUT_SECONDS)));
+  state.startTimeoutSeconds = seconds;
+  const input = $("#em-start-timeout");
+  if (input) {
+    input.value = String(seconds);
+    updateRangeProgress(input);
+  }
+  const output = $("#em-start-timeout-value");
+  if (output) output.value = t("common.seconds", { value: seconds });
+}
+
+async function persistStartTimeoutSeconds() {
+  const input = $("#em-start-timeout");
+  if (input) input.disabled = true;
+  const value = state.startTimeoutSeconds;
+  try {
+    await api("/api/settings", { method: "PUT", body: JSON.stringify({ startTimeoutSeconds: value }) });
+    state.savedStartTimeoutSeconds = value;
+  } catch (error) {
+    setStartTimeoutSeconds(state.savedStartTimeoutSeconds);
+    showFeedback(t("settings.timeoutSaveFailed", { error: error.message }), "error");
+  } finally {
+    if (input) input.disabled = false;
+  }
+}
+
+function initStartTimeoutSetting() {
+  const input = $("#em-start-timeout");
+  if (!input) return;
+  input.min = String(START_TIMEOUT_RANGE.minSeconds);
+  input.max = String(START_TIMEOUT_RANGE.maxSeconds);
+  setStartTimeoutSeconds(state.startTimeoutSeconds);
+  input.addEventListener("input", (event) => setStartTimeoutSeconds(event.currentTarget.value));
+  input.addEventListener("change", () => { void persistStartTimeoutSeconds(); });
 }
 
 async function loadPersistentAccentColor() {
@@ -1782,11 +2157,21 @@ async function loadPersistentAccentColor() {
     const response = await api("/api/settings");
     if (response.initialized) {
       setAccentColor(response.settings?.accentColor || DEFAULT_ACCENT_COLOR, { persist: false });
+      const seconds = Number(response.settings?.startTimeoutSeconds) || DEFAULT_START_TIMEOUT_SECONDS;
+      state.savedStartTimeoutSeconds = seconds;
+      setStartTimeoutSeconds(seconds);
+      state.preferences.confirmShortcut = response.settings?.confirmShortcut !== false;
+      $("#em-confirm-shortcut").checked = state.preferences.confirmShortcut;
+      persistManagerPreferences();
       return;
     }
-    await api("/api/settings", { method: "PUT", body: JSON.stringify({ accentColor: state.accentColor }) });
+    await api("/api/settings", { method: "PUT", body: JSON.stringify({
+      accentColor: state.accentColor,
+      confirmShortcut: state.preferences.confirmShortcut,
+      startTimeoutSeconds: state.startTimeoutSeconds,
+    }) });
   } catch (error) {
-    showFeedback(`无法读取已保存的主色：${error.message}`, "error");
+    showFeedback(t("settings.loadAccentFailed", { error: error.message }), "error");
   }
 }
 
@@ -1812,6 +2197,17 @@ function persistManagerPreferences() {
 }
 
 function initManagerPreferences() {
+  const confirmShortcut = $("#em-confirm-shortcut");
+  confirmShortcut.checked = state.preferences.confirmShortcut;
+  confirmShortcut.addEventListener("change", async () => {
+    const previous = state.preferences.confirmShortcut;
+    state.preferences.confirmShortcut = confirmShortcut.checked;
+    persistManagerPreferences();
+    confirmShortcut.disabled = true;
+    try { await api("/api/settings", { method: "PUT", body: JSON.stringify({ confirmShortcut: state.preferences.confirmShortcut }) }); }
+    catch (error) { state.preferences.confirmShortcut = previous; confirmShortcut.checked = previous; persistManagerPreferences(); showFeedback(error.message, "error"); }
+    finally { confirmShortcut.disabled = false; }
+  });
   const confirmStop = $("#em-confirm-stop");
   confirmStop.checked = state.preferences.confirmStop;
 
@@ -1822,32 +2218,37 @@ function initManagerPreferences() {
 }
 
 $("#em-add-action").append(makeIconButton({
-  icon: "plus", label: "添加实例", color: "yellow", className: "em-float-action em-float-action--add", onClick: () => openInstanceEditor(),
+  icon: "plus", label: t("common.add"), color: "yellow", className: "em-float-action em-float-action--add", onClick: () => state.currentView === 1 ? openShortcutEditor() : openInstanceEditor(),
 }));
 
 const refreshButton = makeIconButton({
   icon: "arrow.clockwise",
-  label: "刷新任务状态",
+  label: t("navigation.refreshTasks"),
   className: "em-float-action em-float-action--refresh",
   onClick: async (event) => {
     const button = event.currentTarget;
     if (state.refreshing) return;
     state.refreshing = true;
     button.disabled = true;
-    button.classList.add("is-refreshing");
+    button.setAttribute("aria-busy", "true");
     try {
+      if (state.currentView === 1) {
+        await refreshShortcuts();
+        showFeedback(t("shortcut.refreshed"), "success");
+        return;
+      }
       const refreshed = await refreshInstances(false);
-      if (refreshed) showFeedback("任务状态已刷新。", "success");
+      if (refreshed) showFeedback(t("settings.updated"), "success");
     } finally {
       state.refreshing = false;
       button.disabled = false;
-      button.classList.remove("is-refreshing");
+      button.removeAttribute("aria-busy");
     }
   },
 });
 const shutdownButton = makeIconButton({
   icon: "power",
-  label: "关闭 EchoManager",
+  label: t("navigation.shutdown"),
   color: "red",
   className: "em-float-action em-float-action--shutdown",
   onClick: (event) => openManagerShutdownConfirmation(event.currentTarget),
@@ -1902,7 +2303,9 @@ initializeSettingsPanels();
 initTheme();
 void loadPersistentAccentColor();
 initManagerPreferences();
+initStartTimeoutSetting();
 $("#em-logout-button").addEventListener("click", (event) => openLogoutConfirmation(event.currentTarget));
 api("/api/auth/session").then((user) => { state.currentUser = user.username; $("#em-current-user").textContent = user.username; }).catch(() => {});
-refreshDevices(true);
-refreshInstances();
+void refreshDevices(true);
+void loadInstances();
+void refreshShortcuts();

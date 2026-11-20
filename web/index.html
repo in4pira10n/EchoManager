@@ -10,6 +10,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <script src="/settings-config.js"></script>
+    <script src="/static/i18n.js"></script>
     <script>
       try {
         const preference = localStorage.getItem(window.ECHO_MANAGER_SETTINGS.storageKeys.theme);
@@ -23,7 +24,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/static/assets/apple-touch-icon.png">
     <link rel="manifest" href="/manifest.webmanifest">
     <title>EchoManager</title>
-    <link rel="stylesheet" href="/kit/css/echokit.css">
+    <link rel="stylesheet" href="/kit/css/echokit.css?v=20261014-select-field">
     <link rel="stylesheet" href="/app.css">
     <script defer src="/pwa.js"></script>
   </head>
@@ -32,46 +33,44 @@
 
     <main class="em-main">
       <div class="toast-stack em-toast-stack" id="em-toast-stack" role="status" aria-live="polite" aria-relevant="additions"></div>
-      <section class="em-page" id="em-task-view" aria-label="服务实例">
-        <div class="em-task-list" id="em-task-list" aria-label="已登记的服务实例">
+      <section class="em-page" id="em-task-view" data-i18n-aria="navigation.taskView">
+        <div class="em-task-list" id="em-task-list" data-i18n-aria="navigation.registeredInstances">
         </div>
       </section>
 
-      <section class="em-page" id="em-settings-view" aria-label="管理器设置" data-settings-aria-copy="pageLabel" hidden>
+      <section class="em-page" id="em-shortcut-view" data-i18n-aria="navigation.shortcutView" hidden>
+        <div class="em-shortcut-list" id="em-shortcut-list" data-i18n-aria="navigation.shortcutList"></div>
+      </section>
+
+      <section class="em-page" id="em-settings-view" data-i18n-aria="navigation.settingsView" hidden>
         <div class="em-settings-list settings-layout">
           <section class="card settings-panel settings-panel-display em-settings-panel is-expanded" data-settings-panel="appearance">
             <button class="settings-panel-head settings-panel-toggle em-settings-panel-head" type="button" data-settings-panel-toggle aria-expanded="true" aria-controls="em-settings-appearance-content">
-              <span class="settings-panel-head-icon em-settings-panel-head-icon">
-                <img src="/kit/SFSymbols/sun.min.svg" alt="">
-              </span>
               <div class="settings-panel-head-copy em-settings-panel-head-copy">
-                <h3 data-settings-copy="appearance.title">颜色与外观</h3>
-                <p data-settings-copy="appearance.description">调整页面的基本显示设置</p>
+                <h3 data-i18n="settings.appearanceTitle"></h3>
+                <p data-i18n="settings.appearanceDescription"></p>
               </div>
-              <span class="settings-panel-toggle-icon em-settings-panel-toggle-icon">
-                <img src="/kit/SFSymbols/chevron.down.svg" alt="">
-              </span>
             </button>
             <div id="em-settings-appearance-content" class="settings-panel-collapsible-content em-settings-panel-collapsible-content" aria-hidden="false">
               <div class="em-appearance-fields">
                 <div class="em-appearance-row">
                   <div class="em-settings-copy">
-                    <h2 data-settings-copy="appearance.themeLabel">颜色主题</h2>
-                    <p data-settings-copy="appearance.themeDescription">选择是否随系统切换深浅色</p>
+                    <h2 data-i18n="settings.themeLabel"></h2>
+                    <p data-i18n="settings.themeDescription"></p>
                   </div>
-                  <div class="echo-segmented em-theme-segmented" role="group" aria-label="颜色主题" data-settings-aria-copy="appearance.themeLabel">
-                    <button class="echo-segmented__option" type="button" data-em-theme="system" aria-pressed="true">系统</button>
-                    <button class="echo-segmented__option" type="button" data-em-theme="light" aria-pressed="false">浅色</button>
-                    <button class="echo-segmented__option" type="button" data-em-theme="dark" aria-pressed="false">深色</button>
+                  <div class="echo-segmented em-theme-segmented" role="group" data-i18n-aria="settings.themeLabel">
+                    <button class="echo-segmented__option" type="button" data-em-theme="system" aria-pressed="true" data-i18n="settings.themeSystem"></button>
+                    <button class="echo-segmented__option" type="button" data-em-theme="light" aria-pressed="false" data-i18n="settings.themeLight"></button>
+                    <button class="echo-segmented__option" type="button" data-em-theme="dark" aria-pressed="false" data-i18n="settings.themeDark"></button>
                   </div>
                 </div>
                 <div class="em-appearance-row em-appearance-row--accent">
                   <div class="em-settings-copy">
-                    <h2 data-settings-copy="appearance.accentLabel">主色</h2>
-                    <p id="em-accent-description">系统配色方案</p>
+                    <h2 data-i18n="settings.accentLabel"></h2>
+                    <p id="em-accent-description" data-i18n="settings.systemAccentDescription"></p>
                   </div>
-                  <label class="em-accent-picker" title="选择主色" data-settings-title-copy="appearance.accentPickerTitle">
-                    <input id="em-accent-picker" type="color" aria-label="选择主色" data-settings-aria-copy="appearance.accentPickerLabel">
+                  <label class="em-accent-picker" data-i18n-title="settings.accentPickerTitle">
+                    <input id="em-accent-picker" type="color" data-i18n-aria="settings.accentPickerTitle">
                     <span class="em-accent-picker-swatch" aria-hidden="true"></span>
                   </label>
                 </div>
@@ -81,29 +80,23 @@
 
           <section class="card settings-panel settings-panel-visitor em-settings-panel is-expanded" data-settings-panel="network">
             <button class="settings-panel-head settings-panel-toggle em-settings-panel-head" type="button" data-settings-panel-toggle aria-expanded="true" aria-controls="em-settings-network-content">
-              <span class="settings-panel-head-icon em-settings-panel-head-icon">
-                <img src="/kit/SFSymbols/network.svg" alt="">
-              </span>
               <div class="settings-panel-head-copy em-settings-panel-head-copy">
-                <h3 data-settings-copy="network.title">局域网</h3>
-                <p data-settings-copy="network.description">配置通用网络控制</p>
+                <h3 data-i18n="settings.networkTitle"></h3>
+                <p data-i18n="settings.networkDescription"></p>
               </div>
-              <span class="settings-panel-toggle-icon em-settings-panel-toggle-icon">
-                <img src="/kit/SFSymbols/chevron.down.svg" alt="">
-              </span>
             </button>
             <div id="em-settings-network-content" class="settings-panel-collapsible-content em-settings-panel-collapsible-content" aria-hidden="false">
               <div class="em-network-content">
                   <div class="em-network-heading">
                   <div class="em-settings-copy">
-                    <h2 data-settings-copy="network.devicesLabel">设备列表</h2>
-                    <p class="em-network-count" id="em-network-count">当前共 0 台设备</p>
+                    <h2 data-i18n="settings.devicesLabel"></h2>
+                    <p class="em-network-count" id="em-network-count" data-i18n="settings.initialDeviceCount"></p>
                   </div>
                 </div>
-                  <div class="em-network-device-rail" id="em-network-device-rail" aria-label="局域网设备"></div>
+                <div class="em-network-device-rail" id="em-network-device-rail" data-i18n-aria="settings.networkAria"></div>
                 <div class="em-network-runtime">
-                  <div class="em-settings-copy"><h2 data-settings-copy="manager.originLabel">访问地址</h2><p id="em-current-origin">—</p></div>
-                  <div class="em-settings-copy"><h2 data-settings-copy="manager.instanceCountLabel">已登记服务</h2><p id="em-instance-count">0 个</p></div>
+                  <div class="em-settings-copy"><h2 data-i18n="settings.originLabel"></h2><p id="em-current-origin">—</p></div>
+                  <div class="em-settings-copy"><h2 data-i18n="settings.instanceCountLabel"></h2><p id="em-instance-count" data-i18n="settings.initialServiceCount"></p></div>
                 </div>
                 <div id="em-network-add-action"></div>
               </div>
@@ -112,41 +105,51 @@
 
           <section class="card settings-panel settings-panel-application em-settings-panel is-expanded" data-settings-panel="about">
             <button class="settings-panel-head settings-panel-toggle em-settings-panel-head" type="button" data-settings-panel-toggle aria-expanded="true" aria-controls="em-settings-about-content">
-              <span class="settings-panel-head-icon em-settings-panel-head-icon">
-                <img src="/kit/SFSymbols/gear.svg" alt="">
-              </span>
               <div class="settings-panel-head-copy em-settings-panel-head-copy">
-                <h3 data-settings-copy="about.title">一般</h3>
-                <p data-settings-copy="about.description">通用设置</p>
+                <h3 data-i18n="settings.aboutTitle"></h3>
+                <p data-i18n="settings.aboutDescription"></p>
               </div>
-              <span class="settings-panel-toggle-icon em-settings-panel-toggle-icon">
-                <img src="/kit/SFSymbols/chevron.down.svg" alt="">
-              </span>
             </button>
             <div id="em-settings-about-content" class="settings-panel-collapsible-content em-settings-panel-collapsible-content" aria-hidden="false">
               <div class="em-general-content">
                 <div class="em-general-version-row">
                   <div class="em-settings-copy">
-                    <h2 data-settings-copy="about.versionLabel">EchoManager 版本</h2>
-                    <p data-settings-copy="about.version">v0.0.1</p>
+                    <h2 data-i18n="settings.versionLabel"></h2>
+                    <p data-i18n="settings.version"></p>
                   </div>
                   <div id="em-update-action">
-                    <button class="em-settings-action" id="em-check-updates" type="button" data-settings-copy="about.checkUpdates">检查更新</button>
+                    <button class="em-settings-action" id="em-check-updates" type="button" data-i18n="settings.checkUpdates"></button>
                   </div>
                 </div>
                 <div class="em-general-extra">
+                  <div class="em-settings-range-row">
+                    <div class="em-settings-range-heading">
+                      <div class="em-settings-copy">
+                        <h2 data-i18n="settings.startTimeoutLabel"></h2>
+                        <p data-i18n="settings.startTimeoutDescription"></p>
+                      </div>
+                      <output id="em-start-timeout-value" for="em-start-timeout" aria-live="polite" data-i18n="settings.initialTimeout"></output>
+                    </div>
+                    <input id="em-start-timeout" class="em-settings-range-input" type="range" min="5" max="120" step="1" value="25" data-i18n-aria="settings.startTimeoutLabel" aria-describedby="em-start-timeout-limits">
+                    <div id="em-start-timeout-limits" class="em-settings-range-limits" aria-hidden="true"><span data-i18n="settings.rangeMin"></span><span data-i18n="settings.rangeMax"></span></div>
+                  </div>
+                  <label class="em-settings-switch" for="em-confirm-shortcut">
+                    <span><strong data-i18n="settings.confirmShortcutLabel"></strong><small data-i18n="settings.confirmShortcutDescription"></small></span>
+                    <input id="em-confirm-shortcut" type="checkbox">
+                    <span class="em-settings-switch-track" aria-hidden="true"></span>
+                  </label>
                   <label class="em-settings-switch" for="em-confirm-stop">
-                    <span><strong data-settings-copy="taskStatus.confirmStopLabel">停止前确认</strong><small data-settings-copy="taskStatus.confirmStopDescription">减少误操作导致的服务中断</small></span>
+                    <span><strong data-i18n="settings.confirmStopLabel"></strong><small data-i18n="settings.confirmStopDescription"></small></span>
                     <input id="em-confirm-stop" type="checkbox">
                     <span class="em-settings-switch-track" aria-hidden="true"></span>
                   </label>
                   <div class="em-account-row">
                     <div class="em-settings-copy">
-                      <h2 data-settings-copy="about.adminLabel">当前管理员</h2>
+                      <h2 data-i18n="ui.currentUser"></h2>
                       <p id="em-current-user"></p>
                     </div>
                     <div id="em-logout-action">
-                      <button class="em-settings-action" id="em-logout-button" type="button">退出登录</button>
+                      <button class="em-settings-action" id="em-logout-button" type="button" data-i18n="instance.logoutTitle"></button>
                     </div>
                   </div>
                 </div>
@@ -157,8 +160,8 @@
       </section>
     </main>
 
-    <div class="em-floating-actions em-floating-actions--left" aria-label="添加实例"><div id="em-add-action"></div></div>
-    <div class="em-floating-actions em-floating-actions--right" id="em-refresh-container" aria-label="刷新任务状态"><div id="em-refresh-action"></div></div>
+    <div class="em-floating-actions em-floating-actions--left" data-i18n-aria="navigation.addInstance"><div id="em-add-action"></div></div>
+    <div class="em-floating-actions em-floating-actions--right" id="em-refresh-container" data-i18n-aria="navigation.refreshTasks"><div id="em-refresh-action"></div></div>
     <div id="em-modal-root"></div>
 
     <script type="module" src="/app.js"></script>

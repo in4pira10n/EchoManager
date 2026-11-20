@@ -115,25 +115,25 @@ func normalizeEchoKitDir(path string) (string, error) {
 		path = strings.TrimSpace(path[1 : len(path)-1])
 	}
 	if path == "" {
-		return "", errors.New("请输入 EchoKit 文件夹位置。")
+		return "", errors.New(uiText("backend.setup.message001"))
 	}
 	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("无法解析用户目录：%w", err)
+			return "", fmt.Errorf(uiText("backend.setup.message002"), err)
 		}
 		path = filepath.Join(home, strings.TrimLeft(path[1:], `/\`))
 	}
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return "", fmt.Errorf("无法解析 EchoKit 路径：%w", err)
+		return "", fmt.Errorf(uiText("backend.setup.message003"), err)
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return "", fmt.Errorf("无法访问此文件夹：%w", err)
+		return "", fmt.Errorf(uiText("backend.setup.message004"), err)
 	}
 	if !info.IsDir() {
-		return "", errors.New("此路径不是文件夹。")
+		return "", errors.New(uiText("backend.setup.message005"))
 	}
 	missing := make([]string, 0, 3)
 	for _, relativePath := range requiredEchoKitAssets {
@@ -146,7 +146,7 @@ func normalizeEchoKitDir(path string) (string, error) {
 		}
 	}
 	if len(missing) > 0 {
-		return "", fmt.Errorf("未找到 EchoKit 所需文件，例如：%s。请填写包含 css、components、tokens 和 SFSymbols 文件夹的 EchoKit 根目录。", strings.Join(missing, "、"))
+		return "", fmt.Errorf(uiText("backend.setup.message006"), strings.Join(missing, "、"))
 	}
 	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
 		absPath = resolved
@@ -231,7 +231,9 @@ func setupPageHandler(assets fs.FS, runtime *appRuntime, auth *authManager) http
 		}
 		var relativePath string
 		switch r.URL.Path {
-		case "/setup.css", "/setup.js", "/auth.css", "/settings-config.js", "/pwa.js":
+		case "/setup.css", "/setup.js", "/auth.css", "/settings-config.js", "/static/i18n.js", "/pwa.js":
+			relativePath = strings.TrimPrefix(r.URL.Path, "/")
+		case "/static/strings/locales.json", "/static/strings/zh-CN.json":
 			relativePath = strings.TrimPrefix(r.URL.Path, "/")
 		case "/static/assets/echomanager-icon.png",
 			"/static/assets/favicon.ico",
@@ -252,22 +254,22 @@ func setupAPIHandler(runtime *appRuntime, auth *authManager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "只支持 POST 请求。"})
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": uiText("backend.setup.message007")})
 			return
 		}
 		if !sameOriginRequest(r) {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "跨站请求已拒绝。"})
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": uiText("backend.auth.message011")})
 			return
 		}
 		runtime.setupMu.Lock()
 		defer runtime.setupMu.Unlock()
 		if !runtime.requiresSetup() {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "初始化已完成，请刷新页面。"})
+			writeJSON(w, http.StatusConflict, map[string]string{"error": uiText("backend.setup.message008")})
 			return
 		}
 		if auth.hasUsers() {
 			if _, ok := auth.currentUser(r); !ok {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先使用管理员账号登录，再修复 EchoKit 路径。"})
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": uiText("backend.setup.message009")})
 				return
 			}
 		}
@@ -281,12 +283,12 @@ func setupAPIHandler(runtime *appRuntime, auth *authManager) http.Handler {
 		decoder := json.NewDecoder(r.Body)
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&request); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "初始化信息无效：" + err.Error()})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": uiText("backend.setup.message010") + err.Error()})
 			return
 		}
 		var extra any
 		if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求只能包含一组初始化信息。"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": uiText("backend.setup.message011")})
 			return
 		}
 		kitDir, err := normalizeEchoKitDir(request.EchoKitDir)
@@ -295,7 +297,7 @@ func setupAPIHandler(runtime *appRuntime, auth *authManager) http.Handler {
 			return
 		}
 		if request.Password != request.ConfirmPassword {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "两次输入的密码不一致。"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": uiText("auth.passwordMismatch")})
 			return
 		}
 		if _, err := validateManagerCredentials(request.Username, request.Password); err != nil && !auth.hasUsers() {
@@ -307,23 +309,23 @@ func setupAPIHandler(runtime *appRuntime, auth *authManager) http.Handler {
 		if config.EchoKitDirFromEnv {
 			currentEnvDir, envErr := normalizeEchoKitDir(config.EchoKitDir)
 			if envErr != nil || currentEnvDir != kitDir {
-				writeJSON(w, http.StatusConflict, map[string]string{"error": "ECHOKIT_DIR 环境变量优先于配置文件。请先将环境变量改为有效的 EchoKit 路径并重启服务。"})
+				writeJSON(w, http.StatusConflict, map[string]string{"error": uiText("backend.setup.message012")})
 				return
 			}
 		}
 		if config.ConfigPath == "" {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法确定配置文件位置。"})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": uiText("backend.setup.message013")})
 			return
 		}
 		fileConfig := config.File
 		fileConfig.EchoKitDir = kitDir
 		if err := writeAppConfig(config.ConfigPath, fileConfig); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法保存配置文件：" + err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": uiText("backend.setup.message014") + err.Error()})
 			return
 		}
 		if !auth.hasUsers() {
 			if err := auth.createInitialAdmin(request.Username, request.Password); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法创建初始管理员账户：" + err.Error()})
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": uiText("backend.setup.message015") + err.Error()})
 				return
 			}
 		}

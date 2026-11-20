@@ -38,6 +38,8 @@ const (
 	stopTimeout       = 5 * time.Second
 )
 
+var managerRestartWarning = uiText("backend.manager.message001")
+
 func isActiveStatus(status string) bool {
 	switch status {
 	case statusStarting, statusRunning, statusStopping, statusException:
@@ -102,6 +104,7 @@ type instanceManager struct {
 	statePath              string
 	logDir                 string
 	iconDir                string
+	settings               *managerSettingsStore
 	instances              []Instance
 	devices                []Device
 	secretKey              []byte
@@ -194,26 +197,26 @@ func newInstanceManager(dataDir string) (*instanceManager, error) {
 			if instance.DeviceID != "" {
 				if m.deviceIndexLocked(instance.DeviceID) < 0 {
 					instance.Status = statusUnavailable
-					instance.Error = "关联的目标设备不存在；请重新选择设备。"
+					instance.Error = uiText("backend.manager.message002")
 				} else if previousPID > 0 && isActiveStatus(previousStatus) {
 					instance.Status = statusException
 					instance.PID = previousPID
 					instance.StartedAt = saved.StartedAt
-					instance.Error = "管理器重启后尚未核验远程进程；请手动刷新状态。"
+					instance.Error = uiText("backend.manager.message003")
 				} else {
 					instance.Error = ""
 				}
 			} else if err := validateExecutable(instance.ExecutablePath); err != nil {
 				instance.Status = statusUnavailable
-				instance.Error = "登记的可执行文件不可用：" + err.Error()
+				instance.Error = uiText("backend.manager.message004") + err.Error()
 			} else if previousPID > 0 && (previousStatus == statusStarting || previousStatus == statusRunning || previousStatus == statusStopping || previousStatus == statusException) && portAccepting(instance.ConfiguredPort) {
 				instance.Status = statusException
 				instance.PID = previousPID
 				instance.ActualPort = instance.ConfiguredPort
-				instance.Error = fmt.Sprintf("管理器重启后发现端口 %d 仍有服务响应；无法确认进程身份，因此不会自动接管或结束它。", instance.ConfiguredPort)
+				instance.Error = fmt.Sprintf(uiText("backend.manager.message005"), instance.ConfiguredPort)
 				m.appendLogLocked(instance.ID, instance.Error)
-			} else if instance.Error == "" {
-				instance.Error = "管理器已重启；启动时会重新核验进程和端口。"
+			} else if instance.Error == "" && (previousPID > 0 || isActiveStatus(previousStatus)) {
+				instance.Error = managerRestartWarning
 			}
 			m.instances = append(m.instances, instance)
 		}
@@ -368,7 +371,7 @@ func (m *instanceManager) refreshLocalStates() {
 			if startedAt == "" {
 				startedAt = time.Now().Format(time.RFC3339)
 			}
-			if current.Status != statusRunning || current.PID != match.PID || current.ActualPort != snapshot.ConfiguredPort || current.ProcessStartToken != match.StartToken {
+			if current.Status != statusRunning || current.PID != match.PID || current.ActualPort != snapshot.ConfiguredPort || current.ProcessStartToken != match.StartToken || current.Error != "" {
 				current.Status = statusRunning
 				current.PID = match.PID
 				current.ActualPort = snapshot.ConfiguredPort
@@ -380,7 +383,7 @@ func (m *instanceManager) refreshLocalStates() {
 			continue
 		}
 		if len(portListeners) > 0 {
-			message := fmt.Sprintf("端口 %d 有进程监听，但无法唯一确认它是此任务（需要唯一监听者且可执行文件路径匹配）；为避免误接管，未控制该进程。", snapshot.ConfiguredPort)
+			message := fmt.Sprintf(uiText("backend.manager.message006"), snapshot.ConfiguredPort)
 			if current.Status != statusException || current.Error != message || current.PID != 0 || current.ActualPort != snapshot.ConfiguredPort {
 				current.Status = statusException
 				current.PID = 0
@@ -395,7 +398,7 @@ func (m *instanceManager) refreshLocalStates() {
 		if snapshot.PID > 0 {
 			identity, exists := staleProcesses[snapshot.PID]
 			if exists && processInspectErr == nil && identity.StartToken != "" && identity.StartToken == snapshot.ProcessStartToken && sameExecutablePath(snapshot.ExecutablePath, identity.Executable) {
-				message := fmt.Sprintf("进程 PID %d 仍在运行，但端口 %d 当前未监听。", snapshot.PID, snapshot.ConfiguredPort)
+				message := fmt.Sprintf(uiText("backend.manager.message007"), snapshot.PID, snapshot.ConfiguredPort)
 				if current.Status != statusException || current.Error != message || current.ActualPort != 0 {
 					current.Status = statusException
 					current.ActualPort = 0
@@ -415,6 +418,8 @@ func (m *instanceManager) refreshLocalStates() {
 			current.ProcessStartToken = ""
 			current.Error = ""
 			changed = true
+		} else if clearManagerRestartWarning(current) {
+			changed = true
 		}
 	}
 	if changed {
@@ -422,6 +427,20 @@ func (m *instanceManager) refreshLocalStates() {
 			log.Printf("save refreshed local process state: %v", err)
 		}
 	}
+}
+
+// clearManagerRestartWarning clears the startup warning after local discovery
+// confirms that no process or listener remains to verify.
+func clearManagerRestartWarning(instance *Instance) bool {
+	if instance == nil || instance.Error != managerRestartWarning || instance.PID > 0 {
+		return false
+	}
+	instance.Status = statusStopped
+	instance.ActualPort = 0
+	instance.StartedAt = ""
+	instance.ProcessStartToken = ""
+	instance.Error = ""
+	return true
 }
 
 func sameExecutablePath(configured, actual string) bool {
@@ -464,7 +483,7 @@ func (m *instanceManager) reorder(ids []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(ids) != len(m.instances) {
-		return apiError{status: http.StatusConflict, message: "任务列表已更新，请刷新后重试。"}
+		return apiError{status: http.StatusConflict, message: uiText("backend.manager.message008")}
 	}
 
 	byID := make(map[string]Instance, len(m.instances))
@@ -476,10 +495,10 @@ func (m *instanceManager) reorder(ids []string) error {
 	for _, id := range ids {
 		instance, exists := byID[id]
 		if !exists || !idPattern.MatchString(id) {
-			return apiError{status: http.StatusBadRequest, message: "任务顺序包含无效实例。"}
+			return apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message009")}
 		}
 		if _, duplicate := seen[id]; duplicate {
-			return apiError{status: http.StatusBadRequest, message: "任务顺序包含重复实例。"}
+			return apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message010")}
 		}
 		seen[id] = struct{}{}
 		ordered = append(ordered, instance)
@@ -523,7 +542,7 @@ func (m *instanceManager) publicInstance(instance Instance) instanceResponse {
 			response.DeviceAddress = device.Address
 			response.DevicePlatform = device.Platform
 		} else {
-			response.DeviceName = "未知设备"
+			response.DeviceName = uiText("ui.unknownDevice")
 		}
 	}
 	if instance.IconFile != "" {
@@ -552,13 +571,13 @@ func (m *instanceManager) create(input Instance) (Instance, error) {
 	if input.DeviceID == "" {
 		if err := validateExecutable(input.ExecutablePath); err != nil {
 			input.Status = statusUnavailable
-			input.Error = "登记的可执行文件不可用：" + err.Error()
+			input.Error = uiText("backend.manager.message004") + err.Error()
 		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if input.DeviceID != "" && m.deviceIndexLocked(input.DeviceID) < 0 {
-		return Instance{}, apiError{status: http.StatusConflict, message: "目标设备已被移除，请刷新后重试。"}
+		return Instance{}, apiError{status: http.StatusConflict, message: uiText("backend.manager.message011")}
 	}
 	m.instances = append(m.instances, input)
 	if err := m.saveLocked(); err != nil {
@@ -582,18 +601,18 @@ func (m *instanceManager) update(id string, input Instance) (Instance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, active := m.running[id]; active {
-		return Instance{}, apiError{status: http.StatusConflict, message: "运行中的实例不可编辑，请先停止。"}
+		return Instance{}, apiError{status: http.StatusConflict, message: uiText("backend.manager.message012")}
 	}
 	index := m.indexLocked(id)
 	if index < 0 {
-		return Instance{}, apiError{status: http.StatusNotFound, message: "找不到此实例。"}
+		return Instance{}, apiError{status: http.StatusNotFound, message: uiText("backend.manager.message013")}
 	}
 	previous := m.instances[index]
 	if previous.PID > 0 && previous.ProcessStartToken != "" {
-		return Instance{}, apiError{status: http.StatusConflict, message: "已接管的运行实例不可编辑，请先停止。"}
+		return Instance{}, apiError{status: http.StatusConflict, message: uiText("backend.manager.message014")}
 	}
 	if input.DeviceID != "" && m.deviceIndexLocked(input.DeviceID) < 0 {
-		return Instance{}, apiError{status: http.StatusConflict, message: "目标设备已被移除，请刷新后重试。"}
+		return Instance{}, apiError{status: http.StatusConflict, message: uiText("backend.manager.message011")}
 	}
 	input.ID = id
 	input.IconFile = previous.IconFile
@@ -606,7 +625,7 @@ func (m *instanceManager) update(id string, input Instance) (Instance, error) {
 	if input.DeviceID == "" {
 		if err := validateExecutable(input.ExecutablePath); err != nil {
 			input.Status = statusUnavailable
-			input.Error = "登记的可执行文件不可用：" + err.Error()
+			input.Error = uiText("backend.manager.message004") + err.Error()
 		} else {
 			input.Error = ""
 		}
@@ -626,11 +645,11 @@ func (m *instanceManager) delete(id string) error {
 	defer m.mu.Unlock()
 	index := m.indexLocked(id)
 	if index < 0 {
-		return apiError{status: http.StatusNotFound, message: "找不到此实例。"}
+		return apiError{status: http.StatusNotFound, message: uiText("backend.manager.message013")}
 	}
 	instance := m.instances[index]
 	if _, active := m.running[id]; active || instance.Status == statusStarting || instance.Status == statusRunning || instance.Status == statusStopping {
-		return apiError{status: http.StatusConflict, message: "运行中的实例不可删除，请先停止。"}
+		return apiError{status: http.StatusConflict, message: uiText("backend.manager.message015")}
 	}
 	previous := append([]Instance(nil), m.instances...)
 	m.instances = append(m.instances[:index], m.instances[index+1:]...)
@@ -653,7 +672,7 @@ func (m *instanceManager) updateIcon(id, iconData string) (Instance, error) {
 	defer m.mu.Unlock()
 	index := m.indexLocked(id)
 	if index < 0 {
-		return Instance{}, apiError{status: http.StatusNotFound, message: "找不到此实例。"}
+		return Instance{}, apiError{status: http.StatusNotFound, message: uiText("backend.manager.message013")}
 	}
 	fileID, err := randomID()
 	if err != nil {
@@ -704,15 +723,15 @@ func (m *instanceManager) readIcon(id string) ([]byte, error) {
 	defer m.mu.Unlock()
 	index := m.indexLocked(id)
 	if index < 0 {
-		return nil, apiError{status: http.StatusNotFound, message: "找不到此实例。"}
+		return nil, apiError{status: http.StatusNotFound, message: uiText("backend.manager.message013")}
 	}
 	name := m.instances[index].IconFile
 	if !validIconFileName(id, name) {
-		return nil, apiError{status: http.StatusNotFound, message: "此实例尚未设置自定义图标。"}
+		return nil, apiError{status: http.StatusNotFound, message: uiText("backend.manager.message016")}
 	}
 	imageData, err := os.ReadFile(filepath.Join(m.iconDir, name))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, apiError{status: http.StatusNotFound, message: "任务图标文件不存在。"}
+		return nil, apiError{status: http.StatusNotFound, message: uiText("backend.manager.message017")}
 	}
 	return imageData, err
 }
@@ -722,7 +741,7 @@ func (m *instanceManager) start(id string) error {
 	index := m.indexLocked(id)
 	if index < 0 {
 		m.mu.Unlock()
-		return apiError{status: http.StatusNotFound, message: "找不到此实例。"}
+		return apiError{status: http.StatusNotFound, message: uiText("backend.manager.message013")}
 	}
 	instance := m.instances[index]
 	if instance.DeviceID != "" {
@@ -731,20 +750,20 @@ func (m *instanceManager) start(id string) error {
 	}
 	if active := m.running[id]; active != nil {
 		m.mu.Unlock()
-		return apiError{status: http.StatusConflict, message: "此实例已经处于启动或运行流程中。"}
+		return apiError{status: http.StatusConflict, message: uiText("backend.manager.message018")}
 	}
 	if instance.PID > 0 && instance.ProcessStartToken != "" && instance.Status == statusException {
 		m.mu.Unlock()
-		return apiError{status: http.StatusConflict, message: "此任务仍有已核验的进程；请先刷新状态或停止该进程。"}
+		return apiError{status: http.StatusConflict, message: uiText("backend.manager.message019")}
 	}
 	if instance.Status == statusStarting || instance.Status == statusRunning || instance.Status == statusStopping {
 		m.mu.Unlock()
-		return apiError{status: http.StatusConflict, message: "请等待当前状态完成后再操作。"}
+		return apiError{status: http.StatusConflict, message: uiText("backend.manager.message020")}
 	}
 	if err := validateExecutable(instance.ExecutablePath); err != nil {
 		m.instances[index].Status = statusUnavailable
 		m.instances[index].Error = err.Error()
-		m.appendLogLocked(id, "程序不可用："+err.Error())
+		m.appendLogLocked(id, uiText("backend.manager.message021")+err.Error())
 		_ = m.saveLocked()
 		m.mu.Unlock()
 		return apiError{status: http.StatusBadRequest, message: err.Error()}
@@ -762,9 +781,9 @@ func (m *instanceManager) start(id string) error {
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		m.mu.Unlock()
-		return apiError{status: http.StatusInternalServerError, message: "无法创建实例日志：" + err.Error()}
+		return apiError{status: http.StatusInternalServerError, message: uiText("backend.manager.message022") + err.Error()}
 	}
-	_, _ = fmt.Fprintf(logFile, "\n[%s] EchoManager 启动 %s\n", time.Now().Format(time.RFC3339), instance.Name)
+	_, _ = fmt.Fprintf(logFile, uiText("backend.manager.message023"), time.Now().Format(time.RFC3339), instance.Name)
 	cmd := exec.Command(instance.ExecutablePath, instance.Arguments...)
 	cmd.Dir = filepath.Dir(instance.ExecutablePath)
 	cmd.Env = mergedEnvironment(instance.Environment)
@@ -772,13 +791,13 @@ func (m *instanceManager) start(id string) error {
 	cmd.Stderr = logFile
 	configureCommand(cmd)
 	if err := cmd.Start(); err != nil {
-		_, _ = fmt.Fprintf(logFile, "启动失败：%v\n", err)
+		_, _ = fmt.Fprintf(logFile, uiText("backend.manager.message024"), err)
 		_ = logFile.Close()
 		m.instances[index].Status = statusException
-		m.instances[index].Error = "启动失败：" + err.Error()
+		m.instances[index].Error = uiText("backend.manager.message025") + err.Error()
 		_ = m.saveLocked()
 		m.mu.Unlock()
-		return apiError{status: http.StatusBadRequest, message: "启动失败：" + err.Error()}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message025") + err.Error()}
 	}
 	mp := &managedProcess{cmd: cmd, logFile: logFile, done: make(chan struct{})}
 	m.running[id] = mp
@@ -788,12 +807,12 @@ func (m *instanceManager) start(id string) error {
 	m.instances[index].ActualPort = 0
 	m.instances[index].StartedAt = time.Now().Format(time.RFC3339)
 	m.instances[index].LastExitCode = nil
-	m.instances[index].Error = "等待服务端口就绪…"
+	m.instances[index].Error = uiText("backend.manager.message026")
 	if err := m.saveLocked(); err != nil {
 		delete(m.running, id)
 		m.instances[index].Status = statusException
 		m.instances[index].PID = 0
-		m.instances[index].Error = "无法保存实例状态：" + err.Error()
+		m.instances[index].Error = uiText("backend.manager.message027") + err.Error()
 		_ = terminateManagedProcess(cmd, true)
 		m.mu.Unlock()
 		return err
@@ -806,7 +825,8 @@ func (m *instanceManager) start(id string) error {
 }
 
 func (m *instanceManager) monitorReadiness(id string, process *managedProcess, port int) {
-	deadline := time.NewTimer(startTimeout)
+	timeout := m.readinessTimeout()
+	deadline := time.NewTimer(timeout)
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer deadline.Stop()
 	defer ticker.Stop()
@@ -821,7 +841,7 @@ func (m *instanceManager) monitorReadiness(id string, process *managedProcess, p
 				if index := m.indexLocked(id); index >= 0 {
 					m.instances[index].Status = statusException
 					m.instances[index].ActualPort = 0
-					m.instances[index].Error = fmt.Sprintf("进程已启动，但 %d 端口在 25 秒内未就绪。", port)
+					m.instances[index].Error = fmt.Sprintf(uiText("backend.manager.message028"), port, int(timeout.Seconds()))
 					m.appendLogLocked(id, m.instances[index].Error)
 					_ = m.saveLocked()
 				}
@@ -853,6 +873,17 @@ func (m *instanceManager) monitorReadiness(id string, process *managedProcess, p
 	}
 }
 
+func (m *instanceManager) readinessTimeout() time.Duration {
+	if m.settings == nil {
+		return startTimeout
+	}
+	settings, _ := m.settings.get()
+	if settings.StartTimeoutSeconds < minStartTimeoutSeconds || settings.StartTimeoutSeconds > maxStartTimeoutSeconds {
+		return startTimeout
+	}
+	return time.Duration(settings.StartTimeoutSeconds) * time.Second
+}
+
 func (m *instanceManager) monitorHealth(id string, process *managedProcess, port int) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -866,7 +897,7 @@ func (m *instanceManager) monitorHealth(id string, process *managedProcess, port
 				consecutiveFailures = 0
 				m.mu.Lock()
 				if m.running[id] == process {
-					if index := m.indexLocked(id); index >= 0 && m.instances[index].Status == statusException && strings.Contains(m.instances[index].Error, "健康检查") {
+					if index := m.indexLocked(id); index >= 0 && m.instances[index].Status == statusException && strings.Contains(m.instances[index].Error, uiText("backend.manager.message029")) {
 						m.instances[index].Status = statusRunning
 						m.instances[index].ActualPort = port
 						m.instances[index].Error = ""
@@ -884,7 +915,7 @@ func (m *instanceManager) monitorHealth(id string, process *managedProcess, port
 			if m.running[id] == process {
 				if index := m.indexLocked(id); index >= 0 && m.instances[index].Status == statusRunning {
 					m.instances[index].Status = statusException
-					m.instances[index].Error = fmt.Sprintf("进程仍在运行，但端口 %d 连续健康检查失败。", port)
+					m.instances[index].Error = fmt.Sprintf(uiText("backend.manager.message030"), port)
 					m.appendLogLocked(id, m.instances[index].Error)
 					_ = m.saveLocked()
 				}
@@ -898,9 +929,9 @@ func (m *instanceManager) monitorHealth(id string, process *managedProcess, port
 func (m *instanceManager) waitForExit(id string, process *managedProcess) {
 	err := process.cmd.Wait()
 	if err != nil {
-		_, _ = fmt.Fprintf(process.logFile, "\n[%s] 进程退出：%v\n", time.Now().Format(time.RFC3339), err)
+		_, _ = fmt.Fprintf(process.logFile, uiText("backend.manager.message031"), time.Now().Format(time.RFC3339), err)
 	} else {
-		_, _ = fmt.Fprintf(process.logFile, "\n[%s] 进程正常退出。\n", time.Now().Format(time.RFC3339))
+		_, _ = fmt.Fprintf(process.logFile, uiText("backend.manager.message032"), time.Now().Format(time.RFC3339))
 	}
 	_ = process.logFile.Close()
 	m.mu.Lock()
@@ -919,7 +950,7 @@ func (m *instanceManager) waitForExit(id string, process *managedProcess) {
 			// Preserve the readiness failure that caused the process to be terminated.
 		} else {
 			instance.Status = statusException
-			instance.Error = "进程意外退出。请查看实例日志。"
+			instance.Error = uiText("backend.manager.message033")
 		}
 		instance.PID = 0
 		instance.ProcessStartToken = ""
@@ -951,7 +982,7 @@ func (m *instanceManager) stop(id string) (resultErr error) {
 	index := m.indexLocked(id)
 	if index < 0 {
 		m.mu.Unlock()
-		return apiError{status: http.StatusNotFound, message: "找不到此实例。"}
+		return apiError{status: http.StatusNotFound, message: uiText("backend.manager.message013")}
 	}
 	attempted = cloneInstance(m.instances[index])
 	if m.instances[index].DeviceID != "" {
@@ -960,7 +991,7 @@ func (m *instanceManager) stop(id string) (resultErr error) {
 	}
 	if m.instances[index].Status == statusStopping {
 		m.mu.Unlock()
-		return apiError{status: http.StatusConflict, message: "此实例正在停止。"}
+		return apiError{status: http.StatusConflict, message: uiText("backend.manager.message034")}
 	}
 	process := m.running[id]
 	if process == nil {
@@ -968,17 +999,17 @@ func (m *instanceManager) stop(id string) (resultErr error) {
 		if instance.PID > 0 && instance.ProcessStartToken != "" &&
 			(instance.Status == statusRunning || instance.Status == statusException || instance.Status == statusStopping) {
 			m.instances[index].Status = statusStopping
-			m.instances[index].Error = "正在核验并停止已接管的进程…"
+			m.instances[index].Error = uiText("backend.manager.message035")
 			_ = m.saveLocked()
 			m.mu.Unlock()
 			return m.stopDiscoveredProcess(instance)
 		}
 		m.mu.Unlock()
-		return apiError{status: http.StatusConflict, message: "实例当前没有由 EchoManager 管理的运行进程。"}
+		return apiError{status: http.StatusConflict, message: uiText("backend.manager.message036")}
 	}
 	process.expected = true
 	m.instances[index].Status = statusStopping
-	m.instances[index].Error = "正在请求程序正常退出…"
+	m.instances[index].Error = uiText("backend.manager.message037")
 	_ = m.saveLocked()
 	m.mu.Unlock()
 
@@ -992,7 +1023,7 @@ func (m *instanceManager) stop(id string) (resultErr error) {
 	case <-time.After(stopTimeout):
 	}
 	if err := terminateManagedProcess(process.cmd, true); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf("强制停止失败：%w", err))
+		stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf(uiText("backend.manager.message038"), err))
 		m.markStopError(id, process, stopErr)
 		return apiError{status: http.StatusInternalServerError, message: stopErr.Error()}
 	}
@@ -1000,9 +1031,9 @@ func (m *instanceManager) stop(id string) (resultErr error) {
 	case <-process.done:
 		return nil
 	case <-time.After(2 * time.Second):
-		stopErr := withGracefulStopError(gracefulStopErr, errors.New("进程在强制停止后仍未退出"))
+		stopErr := withGracefulStopError(gracefulStopErr, errors.New(uiText("backend.manager.message039")))
 		m.markStopError(id, process, stopErr)
-		return apiError{status: http.StatusInternalServerError, message: "进程未能退出，请检查系统权限。"}
+		return apiError{status: http.StatusInternalServerError, message: uiText("backend.manager.message040")}
 	}
 }
 
@@ -1013,7 +1044,7 @@ func withGracefulStopError(gracefulErr, finalErr error) error {
 	if gracefulErr == nil {
 		return finalErr
 	}
-	return fmt.Errorf("%w；常规停止请求也失败：%v", finalErr, gracefulErr)
+	return fmt.Errorf(uiText("backend.manager.message041"), finalErr, gracefulErr)
 }
 
 func (m *instanceManager) markStopError(id string, process *managedProcess, err error) {
@@ -1024,7 +1055,7 @@ func (m *instanceManager) markStopError(id string, process *managedProcess, err 
 	}
 	if index := m.indexLocked(id); index >= 0 {
 		m.instances[index].Status = statusException
-		m.instances[index].Error = "停止失败：" + err.Error()
+		m.instances[index].Error = uiText("backend.manager.message042") + err.Error()
 		_ = m.saveLocked()
 	}
 }
@@ -1046,14 +1077,14 @@ func (m *instanceManager) logs(id string) (string, error) {
 	index := m.indexLocked(id)
 	if index < 0 {
 		m.mu.Unlock()
-		return "", apiError{status: http.StatusNotFound, message: "找不到此实例。"}
+		return "", apiError{status: http.StatusNotFound, message: uiText("backend.manager.message013")}
 	}
 	instance := cloneInstance(m.instances[index])
 	if instance.DeviceID != "" {
 		device, found := m.deviceLocked(instance.DeviceID)
 		m.mu.Unlock()
 		if !found {
-			return "", apiError{status: http.StatusBadRequest, message: "目标设备不存在。"}
+			return "", apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message043")}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
@@ -1063,7 +1094,7 @@ func (m *instanceManager) logs(id string) (string, error) {
 	defer m.mu.Unlock()
 	file, err := os.Open(m.logPath(id))
 	if errors.Is(err, os.ErrNotExist) {
-		return "尚无运行日志。", nil
+		return uiText("backend.manager.message044"), nil
 	}
 	if err != nil {
 		return "", err
@@ -1087,7 +1118,7 @@ func (m *instanceManager) logs(id string) (string, error) {
 		if newline := bytes.IndexByte(content, '\n'); newline >= 0 {
 			content = content[newline+1:]
 		}
-		return "[较早日志已截断，仅显示最近 256 KiB]\n" + string(content), nil
+		return uiText("backend.manager.message045") + string(content), nil
 	}
 	return string(content), nil
 }
@@ -1147,10 +1178,10 @@ func validateInstanceForPlatform(instance *Instance, platform string) error {
 	instance.Name = strings.TrimSpace(instance.Name)
 	instance.ExecutablePath = strings.TrimSpace(instance.ExecutablePath)
 	if instance.Name == "" || len(instance.Name) > 120 {
-		return apiError{status: http.StatusBadRequest, message: "显示名称必填，且最多 120 个字符。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message046")}
 	}
 	if instance.ExecutablePath == "" {
-		return apiError{status: http.StatusBadRequest, message: "程序路径必填。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message047")}
 	}
 	if platform == "win32" {
 		platform = "windows"
@@ -1159,7 +1190,7 @@ func validateInstanceForPlatform(instance *Instance, platform string) error {
 		return apiError{status: http.StatusBadRequest, message: err.Error()}
 	}
 	if instance.ConfiguredPort < 1 || instance.ConfiguredPort > 65535 {
-		return apiError{status: http.StatusBadRequest, message: "端口必须在 1–65535 范围内。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("error.invalidPort")}
 	}
 	if instance.Arguments == nil {
 		instance.Arguments = []string{}
@@ -1168,11 +1199,11 @@ func validateInstanceForPlatform(instance *Instance, platform string) error {
 		instance.Environment = map[string]string{}
 	}
 	if len(instance.Environment) > 100 {
-		return apiError{status: http.StatusBadRequest, message: "环境变量最多 100 项。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message048")}
 	}
 	for key, value := range instance.Environment {
 		if !envKeyPattern.MatchString(key) || strings.ContainsRune(value, '\x00') {
-			return apiError{status: http.StatusBadRequest, message: "环境变量名称或值无效。"}
+			return apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message049")}
 		}
 	}
 	return nil
@@ -1182,16 +1213,16 @@ func (m *instanceManager) stopDiscoveredProcess(instance Instance) error {
 	identity, exists, err := inspectProcessIdentity(instance.PID)
 	if err != nil {
 		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, err)
-		return apiError{status: http.StatusConflict, message: "无法安全核验进程身份，未发送停止命令：" + err.Error()}
+		return apiError{status: http.StatusConflict, message: uiText("backend.manager.message050") + err.Error()}
 	}
 	if !exists {
 		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
 		return nil
 	}
 	if identity.StartToken != instance.ProcessStartToken || !sameExecutablePath(instance.ExecutablePath, identity.Executable) {
-		err := errors.New("当前 PID 已不再对应此前接管的可执行文件或启动实例")
+		err := errors.New(uiText("backend.manager.message051"))
 		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, err)
-		return apiError{status: http.StatusConflict, message: "进程身份已变化，为避免误停其他程序，已取消操作。"}
+		return apiError{status: http.StatusConflict, message: uiText("backend.manager.message052")}
 	}
 
 	var gracefulStopErr error
@@ -1199,9 +1230,9 @@ func (m *instanceManager) stopDiscoveredProcess(instance Instance) error {
 		gracefulStopErr = err
 		stillMatches, inspectErr := discoveredProcessMatches(instance)
 		if inspectErr != nil {
-			stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf("无法复核进程身份：%w", inspectErr))
+			stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf(uiText("backend.manager.message053"), inspectErr))
 			m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, stopErr)
-			return apiError{status: http.StatusInternalServerError, message: "无法安全停止已接管的实例：" + stopErr.Error()}
+			return apiError{status: http.StatusInternalServerError, message: uiText("backend.manager.message054") + stopErr.Error()}
 		}
 		if !stillMatches {
 			m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
@@ -1214,9 +1245,9 @@ func (m *instanceManager) stopDiscoveredProcess(instance Instance) error {
 	}
 	stillMatches, inspectErr := discoveredProcessMatches(instance)
 	if inspectErr != nil {
-		stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf("强制停止前无法复核进程身份：%w", inspectErr))
+		stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf(uiText("backend.manager.message055"), inspectErr))
 		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, stopErr)
-		return apiError{status: http.StatusInternalServerError, message: "无法安全停止已接管的实例：" + stopErr.Error()}
+		return apiError{status: http.StatusInternalServerError, message: uiText("backend.manager.message054") + stopErr.Error()}
 	}
 	if !stillMatches {
 		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
@@ -1228,17 +1259,17 @@ func (m *instanceManager) stopDiscoveredProcess(instance Instance) error {
 			m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
 			return nil
 		}
-		stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf("强制停止已接管实例失败：%w", err))
+		stopErr := withGracefulStopError(gracefulStopErr, fmt.Errorf(uiText("backend.manager.message056"), err))
 		if inspectErr != nil {
-			stopErr = fmt.Errorf("%w（停止后身份复核失败：%v）", stopErr, inspectErr)
+			stopErr = fmt.Errorf(uiText("backend.manager.message057"), stopErr, inspectErr)
 		}
 		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, stopErr)
 		return apiError{status: http.StatusInternalServerError, message: stopErr.Error()}
 	}
 	if !waitForProcessExit(instance.PID, instance.ProcessStartToken, 2*time.Second) {
-		stopErr := withGracefulStopError(gracefulStopErr, errors.New("进程在强制停止后仍未退出"))
+		stopErr := withGracefulStopError(gracefulStopErr, errors.New(uiText("backend.manager.message039")))
 		m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, stopErr)
-		return apiError{status: http.StatusInternalServerError, message: "进程未能退出，请检查系统权限。"}
+		return apiError{status: http.StatusInternalServerError, message: uiText("backend.manager.message040")}
 	}
 	m.finishDiscoveredStop(instance.ID, instance.PID, instance.ProcessStartToken, nil)
 	return nil
@@ -1253,7 +1284,7 @@ func discoveredProcessMatches(instance Instance) (bool, error) {
 		return false, nil
 	}
 	if identity.StartToken != instance.ProcessStartToken || !sameExecutablePath(instance.ExecutablePath, identity.Executable) {
-		return false, errors.New("当前 PID 已不再对应此前接管的可执行文件或启动实例")
+		return false, errors.New(uiText("backend.manager.message051"))
 	}
 	return true, nil
 }
@@ -1285,7 +1316,7 @@ func (m *instanceManager) finishDiscoveredStop(id string, pid int, startToken st
 	}
 	if stopErr != nil {
 		m.instances[index].Status = statusException
-		m.instances[index].Error = "停止失败：" + stopErr.Error()
+		m.instances[index].Error = uiText("backend.manager.message042") + stopErr.Error()
 		_ = m.saveLocked()
 		return
 	}
@@ -1300,19 +1331,19 @@ func (m *instanceManager) finishDiscoveredStop(id string, pid int, startToken st
 
 func decodeIconData(iconData string) ([]byte, error) {
 	if iconData == "" {
-		return nil, apiError{status: http.StatusBadRequest, message: "请提供任务图标图片。"}
+		return nil, apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message058")}
 	}
 	const prefix = "data:image/png;base64,"
 	if len(iconData) > 1_500_000 || !strings.HasPrefix(iconData, prefix) {
-		return nil, apiError{status: http.StatusBadRequest, message: "任务图标必须是有效的 PNG 图片且不能超过约 1 MiB。"}
+		return nil, apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message059")}
 	}
 	imageData, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(iconData, prefix))
 	if err != nil || !bytes.HasPrefix(imageData, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}) {
-		return nil, apiError{status: http.StatusBadRequest, message: "任务图标 PNG 数据无效。"}
+		return nil, apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message060")}
 	}
 	config, format, err := image.DecodeConfig(bytes.NewReader(imageData))
 	if err != nil || format != "png" || config.Width != 512 || config.Height != 512 {
-		return nil, apiError{status: http.StatusBadRequest, message: "任务图标必须是有效的 512 × 512 PNG 图片。"}
+		return nil, apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message061")}
 	}
 	return imageData, nil
 }
@@ -1320,10 +1351,10 @@ func decodeIconData(iconData string) ([]byte, error) {
 func validateExecutable(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
-		return fmt.Errorf("无法访问程序路径：%w", err)
+		return fmt.Errorf(uiText("backend.manager.message062"), err)
 	}
 	if info.IsDir() {
-		return errors.New("程序路径指向目录；请填写可执行文件的完整路径。")
+		return errors.New(uiText("backend.manager.message063"))
 	}
 	if err := executablePermission(path, info); err != nil {
 		return err
@@ -1333,18 +1364,18 @@ func validateExecutable(path string) error {
 
 func checkPortAvailable(port int) error {
 	if portAccepting(port) {
-		return fmt.Errorf("端口 %d 已被占用；请更换端口，EchoManager 不会按端口结束其他程序。", port)
+		return fmt.Errorf(uiText("backend.manager.message064"), port)
 	}
 	for _, address := range []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), net.JoinHostPort("::1", strconv.Itoa(port))} {
 		listener, err := net.Listen("tcp", address)
 		if err != nil {
 			if portAccepting(port) {
-				return fmt.Errorf("端口 %d 已被占用；请更换端口，EchoManager 不会按端口结束其他程序。", port)
+				return fmt.Errorf(uiText("backend.manager.message064"), port)
 			}
 			if strings.Contains(address, "::1") {
 				continue
 			}
-			return fmt.Errorf("无法检查端口 %d：%w", port, err)
+			return fmt.Errorf(uiText("backend.manager.message065"), port, err)
 		}
 		_ = listener.Close()
 	}
@@ -1396,15 +1427,15 @@ func randomID() (string, error) {
 func (m *instanceManager) apiHandler(auth *authManager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && !sameOriginRequest(r) {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "跨站请求已拒绝。"})
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": uiText("backend.auth.message011")})
 			return
 		}
 		if auth == nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "请先登录。"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": uiText("backend.auth.message010")})
 			return
 		}
 		if _, ok := auth.currentUser(r); !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "登录状态已失效，请重新登录。"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": uiText("backend.manager.message066")})
 			return
 		}
 		if r.URL.Path == "/api/devices" {
@@ -1424,7 +1455,7 @@ func (m *instanceManager) apiHandler(auth *authManager) http.Handler {
 			return
 		}
 		if !strings.HasPrefix(r.URL.Path, "/api/instances/") {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "未找到 API 路径。"})
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": uiText("backend.manager.message067")})
 			return
 		}
 		m.handleInstance(w, r, strings.TrimPrefix(r.URL.Path, "/api/instances/"))
@@ -1444,7 +1475,7 @@ func (m *instanceManager) handleInstanceOrder(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if input.IDs == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "任务顺序不能为空。"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": uiText("backend.manager.message068")})
 		return
 	}
 	if err := m.reorder(input.IDs); err != nil {
@@ -1532,7 +1563,7 @@ func (m *instanceManager) handleInstances(w http.ResponseWriter, r *http.Request
 func (m *instanceManager) handleInstance(w http.ResponseWriter, r *http.Request, path string) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 0 || !idPattern.MatchString(parts[0]) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "实例 ID 无效。"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": uiText("backend.manager.message069")})
 		return
 	}
 	id := parts[0]
@@ -1622,7 +1653,7 @@ func (m *instanceManager) handleInstance(w http.ResponseWriter, r *http.Request,
 		}
 		instance, found := m.instanceByID(id)
 		if !found {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "找不到此实例。"})
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": uiText("backend.manager.message013")})
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": instance.Status, "instance": m.publicInstance(instance)})
@@ -1633,12 +1664,12 @@ func (m *instanceManager) handleInstance(w http.ResponseWriter, r *http.Request,
 		}
 		instance, found := m.instanceByID(id)
 		if !found {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "找不到此实例。"})
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": uiText("backend.manager.message013")})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": instance.Status, "instance": m.publicInstance(instance)})
 	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "未找到实例操作。"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": uiText("backend.manager.message070")})
 	}
 }
 
@@ -1647,10 +1678,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return apiError{status: http.StatusBadRequest, message: "请求内容无效：" + err.Error()}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message071") + err.Error()}
 	}
 	if decoder.Decode(&struct{}{}) != io.EOF {
-		return apiError{status: http.StatusBadRequest, message: "请求中包含多余内容。"}
+		return apiError{status: http.StatusBadRequest, message: uiText("backend.manager.message072")}
 	}
 	return nil
 }
@@ -1679,5 +1710,5 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func methodNotAllowed(w http.ResponseWriter) {
 	w.Header().Set("Allow", "GET, POST, PUT")
-	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "不支持此请求方法。"})
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": uiText("backend.manager.message073")})
 }

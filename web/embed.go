@@ -5,7 +5,7 @@ import (
 	"io/fs"
 )
 
-//go:embed *.html *.webmanifest *.js *.css static/assets
+//go:embed *.html *.webmanifest *.js *.css static/assets static/i18n.js static/strings
 var assets embed.FS
 
 func Files() fs.FS {

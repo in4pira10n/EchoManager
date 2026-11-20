@@ -57,48 +57,48 @@ func runRemoteCommand(ctx context.Context, device Device, script string) (string
 	case "winrm":
 		return runWinRMCommand(ctx, device, script)
 	default:
-		return "", fmt.Errorf("不支持的远程连接方式：%s", device.Transport)
+		return "", fmt.Errorf(uiText("backend.remote.message001"), device.Transport)
 	}
 }
 
 func runSSHCommand(ctx context.Context, device Device, script string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("无法定位 Manager 用户目录：%w", err)
+		return "", fmt.Errorf(uiText("backend.remote.message002"), err)
 	}
 	knownHostsPath := filepath.Join(home, ".ssh", "known_hosts")
 	if _, err := os.Stat(knownHostsPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("SSH 主机密钥未配置；请先将已核验的设备主机密钥加入 %s", knownHostsPath)
+			return "", fmt.Errorf(uiText("backend.remote.message003"), knownHostsPath)
 		}
-		return "", fmt.Errorf("无法读取 SSH known_hosts：%w", err)
+		return "", fmt.Errorf(uiText("backend.remote.message004"), err)
 	}
 	hostKeyCallback, err := knownhosts.New(knownHostsPath)
 	if err != nil {
-		return "", fmt.Errorf("读取 SSH known_hosts 失败：%w", err)
+		return "", fmt.Errorf(uiText("backend.remote.message005"), err)
 	}
 	var authMethod ssh.AuthMethod
 	switch device.AuthType {
 	case "key":
 		key, err := os.ReadFile(device.KeyPath)
 		if err != nil {
-			return "", fmt.Errorf("读取 SSH 私钥失败：%w", err)
+			return "", fmt.Errorf(uiText("backend.remote.message006"), err)
 		}
 		signer, err := ssh.ParsePrivateKey(key)
 		if err != nil {
-			return "", fmt.Errorf("解析 SSH 私钥失败：%w", err)
+			return "", fmt.Errorf(uiText("backend.remote.message007"), err)
 		}
 		authMethod = ssh.PublicKeys(signer)
 	case "password":
 		authMethod = ssh.Password(device.Password)
 	default:
-		return "", errors.New("SSH 认证方式无效")
+		return "", errors.New(uiText("backend.remote.message008"))
 	}
 	address := net.JoinHostPort(device.Address, strconv.Itoa(device.Port))
 	dialer := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	connection, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
-		return "", fmt.Errorf("连接 SSH 设备失败：%w", err)
+		return "", fmt.Errorf(uiText("backend.remote.message009"), err)
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = connection.SetDeadline(deadline)
@@ -110,13 +110,13 @@ func runSSHCommand(ctx context.Context, device Device, script string) (string, e
 	clientConnection, channels, requests, err := ssh.NewClientConn(connection, address, clientConfig)
 	if err != nil {
 		_ = connection.Close()
-		return "", fmt.Errorf("SSH 握手或认证失败：%w", err)
+		return "", fmt.Errorf(uiText("backend.remote.message010"), err)
 	}
 	client := ssh.NewClient(clientConnection, channels, requests)
 	defer client.Close()
 	session, err := client.NewSession()
 	if err != nil {
-		return "", fmt.Errorf("创建 SSH 会话失败：%w", err)
+		return "", fmt.Errorf(uiText("backend.remote.message011"), err)
 	}
 	defer session.Close()
 	stdout := &limitedBuffer{limit: remoteOutputLimit}
@@ -145,14 +145,14 @@ func runSSHCommand(ctx context.Context, device Device, script string) (string, e
 		var exitError *ssh.ExitError
 		if errors.As(err, &exitError) {
 			if message != "" {
-				return stdout.String(), fmt.Errorf("SSH 远程命令失败（退出代码 %d）：%s: %w", exitError.ExitStatus(), message, err)
+				return stdout.String(), fmt.Errorf(uiText("backend.remote.message012"), exitError.ExitStatus(), message, err)
 			}
-			return stdout.String(), fmt.Errorf("SSH 远程命令失败（退出代码 %d）：%w", exitError.ExitStatus(), err)
+			return stdout.String(), fmt.Errorf(uiText("backend.remote.message013"), exitError.ExitStatus(), err)
 		}
 		if message != "" {
-			return stdout.String(), fmt.Errorf("SSH 远程命令失败：%s", message)
+			return stdout.String(), fmt.Errorf(uiText("backend.remote.message014"), message)
 		}
-		return stdout.String(), fmt.Errorf("SSH 远程命令失败：%w", err)
+		return stdout.String(), fmt.Errorf(uiText("backend.remote.message015"), err)
 	}
 	return stdout.String(), nil
 }
@@ -162,11 +162,7 @@ func runWinRMCommand(ctx context.Context, device Device, script string) (string,
 }
 
 func winRMScriptStdin(script string) (string, string) {
-	bootstrap := `$payload = [Console]::In.ReadToEnd().Trim()
-if ([string]::IsNullOrWhiteSpace($payload)) { throw '远程启动脚本为空' }
-$scriptBytes = [Convert]::FromBase64String($payload)
-$scriptText = [Text.Encoding]::UTF8.GetString($scriptBytes)
-Invoke-Expression $scriptText`
+	bootstrap := remoteScript("remote-01.ps1")
 	return bootstrap, base64.StdEncoding.EncodeToString([]byte(script))
 }
 
@@ -180,11 +176,11 @@ func runWinRM(ctx context.Context, device Device, script string, stdin string) (
 	parameters := winrm.NewParameters("PT20S", "en-US", 153600)
 	client, err := winrm.NewClientWithParameters(endpoint, device.Username, device.Password, parameters)
 	if err != nil {
-		return "", fmt.Errorf("创建 WinRM 客户端失败：%w", err)
+		return "", fmt.Errorf(uiText("backend.remote.message016"), err)
 	}
 	stdout, stderr, exitCode, err := client.RunPSWithContextWithString(ctx, script, stdin)
 	if err != nil {
-		return stdout, fmt.Errorf("WinRM 远程命令失败：%w", err)
+		return stdout, fmt.Errorf(uiText("backend.remote.message017"), err)
 	}
 	if exitCode != 0 {
 		message := strings.TrimSpace(stderr)
@@ -192,7 +188,7 @@ func runWinRM(ctx context.Context, device Device, script string, stdin string) (
 			message = strings.TrimSpace(stdout)
 		}
 		message = decodePowerShellError(message)
-		return stdout, fmt.Errorf("WinRM 远程命令退出码 %d：%s", exitCode, message)
+		return stdout, fmt.Errorf(uiText("backend.remote.message018"), exitCode, message)
 	}
 	return stdout, nil
 }
@@ -230,10 +226,7 @@ func remoteLogsScript(device Device, instance Instance) string {
 		return windowsLogsScript(instance)
 	}
 	id := shellQuote(instance.ID)
-	return fmt.Sprintf(`set -eu
-log="$HOME/.echomanager/logs/%s.log"
-if [ ! -f "$log" ]; then printf '尚无远程运行日志。\n'; exit 0; fi
-tail -c 262144 "$log"`, id)
+	return fmt.Sprintf(remoteScript("remote-02.sh"), id)
 }
 
 const unixProcessIdentityHelpers = `process_start_token() {
@@ -319,51 +312,7 @@ func unixStartScript(instance Instance) string {
 	for _, argument := range instance.Arguments {
 		fmt.Fprintf(&args, " %s", shellQuote(argument))
 	}
-	return fmt.Sprintf(`set -u
-umask 077
-id=%s
-exe=%s
-port=%s
-root="$HOME/.echomanager"
-meta="$root/instances/$id.meta"
-log="$root/logs/$id.log"
-mkdir -p "$root/instances" "$root/logs"
-%s
-if [ ! -x "$exe" ]; then printf '__EM_ERROR__|程序不存在或不可执行'; exit 4; fi
-if [ -f "$meta" ]; then
-  old_pid=$(sed -n '1p' "$meta")
-  old_token=$(sed -n '2p' "$meta")
-  old_exe=$(sed -n '3p' "$meta")
-  old_started=$(sed -n '4p' "$meta")
-  if [ -n "$old_pid" ] && process_matches "$old_pid" "$old_exe" "$old_token"; then
-    printf '__EM_ERROR__|此实例已在目标设备运行（PID %%s）' "$old_pid"; exit 5
-  fi
-  if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-    current_token=$(process_start_token "$old_pid")
-    if [ -n "$old_token" ] && [ "$current_token" = "$old_token" ]; then
-      write_adopted_record "$old_pid" "$current_token" "$old_started"
-      exit 0
-    fi
-    if adopted=$(adopt_port_listener); then printf '%%s\n' "$adopted"; exit 0; fi
-    printf '__EM_ERROR__|远端进程身份已变化，且无法唯一确认配置端口的监听进程；为避免启动重复实例，未执行接管'; exit 8
-  fi
-  if adopted=$(adopt_port_listener); then printf '%%s\n' "$adopted"; exit 0; fi
-fi
-if [ ! -f "$meta" ]; then
-  if adopted=$(adopt_port_listener); then printf '%%s\n' "$adopted"; exit 0; fi
-  if port_is_listening; then printf '__EM_ERROR__|配置端口已有监听进程，但无法唯一确认其身份；为避免启动重复实例，未执行启动'; exit 8; fi
-fi
-nohup env%s "$exe"%s >>"$log" 2>&1 </dev/null &
-pid=$!
-sleep 0.15
-if ! kill -0 "$pid" 2>/dev/null; then printf '__EM_ERROR__|进程启动后立即退出，请检查远程日志'; exit 6; fi
-token=$(process_start_token "$pid")
-started=$(date +%%s)
-if [ -z "$token" ]; then kill -TERM "$pid" 2>/dev/null || true; printf '__EM_ERROR__|无法核验远程进程身份'; exit 7; fi
-tmp="$meta.tmp.$$"
-printf '%%s\n%%s\n%%s\n%%s\n' "$pid" "$token" "$exe" "$started" >"$tmp"
-mv "$tmp" "$meta"
-printf '__EM_STARTED__|%%s|%%s\n' "$pid" "$started"`, id, executable, port, unixProcessIdentityHelpers, env.String(), args.String())
+	return fmt.Sprintf(remoteScript("remote-03.sh"), id, executable, port, unixProcessIdentityHelpers, env.String(), args.String())
 }
 
 func unixStatusScript(instance Instance) string {
@@ -414,118 +363,10 @@ else state=exception; actual=0; fi
 func unixStopScript(instance Instance) string {
 	id := shellQuote(instance.ID)
 	port := strconv.Itoa(instance.ConfiguredPort)
-	return fmt.Sprintf(`set -u
-id=%s
-port=%s
-meta="$HOME/.echomanager/instances/$id.meta"
-%s
-if [ ! -f "$meta" ]; then
-  if adopted=$(adopt_port_listener); then
-    old_pid=$(sed -n '1p' "$meta"); old_token=$(sed -n '2p' "$meta"); old_exe=$(sed -n '3p' "$meta"); old_started=$(sed -n '4p' "$meta")
-  else
-    if port_is_listening; then printf '__EM_STALE__\n'; exit 8; fi
-    printf '__EM_STOPPED__\n'; exit 0
-  fi
-else
-  old_pid=$(sed -n '1p' "$meta"); old_token=$(sed -n '2p' "$meta"); old_exe=$(sed -n '3p' "$meta"); old_started=$(sed -n '4p' "$meta")
-fi
-pid=$old_pid; token=$old_token; exe=$old_exe
-if ! process_matches "$pid" "$exe" "$token"; then
-  current_token=$(process_start_token "$pid")
-  if kill -0 "$pid" 2>/dev/null && [ -n "$token" ] && [ "$current_token" = "$token" ]; then
-    write_adopted_record "$pid" "$current_token" "$old_started" >/dev/null
-    exe=__ECHOMANAGER_ADOPTED__
-  elif adopted=$(adopt_port_listener); then
-    pid=$(sed -n '1p' "$meta"); token=$(sed -n '2p' "$meta"); exe=$(sed -n '3p' "$meta")
-  else
-    if kill -0 "$pid" 2>/dev/null; then printf '__EM_STALE__\n'; exit 8; fi
-    rm -f "$meta"; printf '__EM_STOPPED__\n'; exit 0
-  fi
-fi
-kill -TERM "$pid" 2>/dev/null || true
-i=0
-while [ "$i" -lt 20 ] && process_matches "$pid" "$exe" "$token"; do sleep 0.25; i=$((i+1)); done
-if process_matches "$pid" "$exe" "$token"; then kill -KILL "$pid" 2>/dev/null || true; fi
-i=0
-while [ "$i" -lt 8 ] && process_matches "$pid" "$exe" "$token"; do sleep 0.25; i=$((i+1)); done
-if process_matches "$pid" "$exe" "$token"; then printf '__EM_ERROR__|进程未能退出'; exit 9; fi
-rm -f "$meta"
-	printf '__EM_STOPPED__\n'`, id, port, unixProcessIdentityHelpers)
+	return fmt.Sprintf(remoteScript("remote-04.sh"), id, port, unixProcessIdentityHelpers)
 }
 
-const windowsRemoteAdoptionHelpers = `function Get-ManagerRawProcess($record) {
-  if ($null -eq $record) { return $null }
-  try { return (Get-Process -Id ([int]$record.pid) -ErrorAction SilentlyContinue) } catch { return $null }
-}
-function Get-PortListenerOwnerIds {
-  $owners = @()
-  try {
-    $owners = @(Get-NetTCPConnection -State Listen -LocalPort ([int]$port) -ErrorAction Stop | ForEach-Object { [int]$_.OwningProcess } | Sort-Object -Unique)
-  } catch {}
-  if ($owners.Count -gt 0) { return $owners }
-
-  try {
-    $netstatPath = Join-Path $env:SystemRoot 'System32\netstat.exe'
-    if (-not (Test-Path -LiteralPath $netstatPath)) { $netstatPath = 'netstat.exe' }
-    $portSuffix = ':' + [string]$port
-    $owners = @(
-      & $netstatPath -ano -p tcp 2>$null | ForEach-Object {
-        $columns = $_.Trim() -split '\s+'
-        if ($columns.Count -lt 5) { return }
-        $localAddress = $columns[$columns.Count - 4]
-        $state = $columns[$columns.Count - 2]
-        if (-not $localAddress.EndsWith($portSuffix, [StringComparison]::OrdinalIgnoreCase)) { return }
-        if ($state -notin @('LISTENING', 'LISTEN', '侦听', '监听')) { return }
-        $ownerId = 0
-        if ([int]::TryParse($columns[$columns.Count - 1], [ref]$ownerId) -and $ownerId -gt 0) { $ownerId }
-      } | Sort-Object -Unique
-    )
-  } catch {}
-  return $owners
-}
-function Get-PortListenerProcess {
-  $owners = @(Get-PortListenerOwnerIds)
-  if ($owners.Count -ne 1) { return $null }
-  try { return (Get-Process -Id ([int]$owners[0]) -ErrorAction Stop) } catch { return $null }
-}
-function Set-ManagerRecordProperty($record, [string]$name, $value) {
-  $record | Add-Member -MemberType NoteProperty -Name $name -Value $value -Force
-}
-function Set-ManagerRecord($record, $process) {
-  if ($null -eq $record) { $record = [pscustomobject]@{} }
-  $sameStart = $false
-  try { $sameStart = ([int]$record.pid -eq $process.Id -and [long]$record.startedTicks -eq [long]$process.StartTime.ToUniversalTime().Ticks) } catch {}
-  try { $executable = [IO.Path]::GetFullPath($process.Path) } catch { $executable = '__ECHOMANAGER_ADOPTED__' }
-  $startedTicks = [long]$process.StartTime.ToUniversalTime().Ticks
-  $startedAt = 0
-  try { $startedAt = [long]$record.startedAt } catch {}
-  if (-not $sameStart -or $startedAt -le 0) {
-    $utcEpoch = [datetime]::SpecifyKind([datetime]'1970-01-01', [DateTimeKind]::Utc)
-    $startedAt = [long]($process.StartTime.ToUniversalTime().Subtract($utcEpoch).TotalSeconds)
-  }
-  Set-ManagerRecordProperty $record 'executable' $executable
-  Set-ManagerRecordProperty $record 'pid' ([int]$process.Id)
-  Set-ManagerRecordProperty $record 'startedTicks' $startedTicks
-  Set-ManagerRecordProperty $record 'startedAt' $startedAt
-  [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($metaPath))
-  $temporaryPath = $metaPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-  $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
-  Move-Item -LiteralPath $temporaryPath -Destination $metaPath -Force
-  return $true
-}
-function Adopt-ManagerProcess($record) {
-  $recorded = Get-ManagerRawProcess $record
-  if ($null -ne $recorded) {
-    try {
-      if ([long]$recorded.StartTime.ToUniversalTime().Ticks -eq [long]$record.startedTicks) {
-        if (Set-ManagerRecord $record $recorded) { return $recorded }
-      }
-    } catch {}
-  }
-  $listener = Get-PortListenerProcess
-  if ($null -ne $listener -and (Set-ManagerRecord $record $listener)) { return $listener }
-  return $null
-}`
+var windowsRemoteAdoptionHelpers = remoteScript("remote-05.ps1")
 
 func windowsStartScript(instance Instance) string {
 	id := powershellQuote(instance.ID)
@@ -533,117 +374,14 @@ func windowsStartScript(instance Instance) string {
 	port := strconv.Itoa(instance.ConfiguredPort)
 	environmentJSON, err := json.Marshal(instance.Environment)
 	if err != nil {
-		return "$ErrorActionPreference = 'Stop'; throw " + powershellQuote("无法编码远程环境变量："+err.Error())
+		return "$ErrorActionPreference = 'Stop'; throw " + powershellQuote(uiText("backend.remote.message019")+err.Error())
 	}
 	launcherScript := windowsLauncherScript(instance, string(environmentJSON))
-	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$id = %s
-$exe = %s
-$port = %s
-$workingDirectory = [IO.Path]::GetDirectoryName($exe)
-$root = Join-Path $env:USERPROFILE '.echomanager'
-$instanceDir = Join-Path $root 'instances'
-$logDir = Join-Path $root 'logs'
-$metaPath = Join-Path $instanceDir ($id + '.json')
-$launchScriptPath = Join-Path $instanceDir ($id + '.launch.ps1')
-[void][IO.Directory]::CreateDirectory($instanceDir)
-[void][IO.Directory]::CreateDirectory($logDir)
-function Get-ManagerRecord { if (Test-Path -LiteralPath $metaPath) { return (Get-Content -LiteralPath $metaPath -Raw | ConvertFrom-Json) }; return $null }
-function Get-ManagerProcess($record) {
-  if ($null -eq $record) { return $null }
-  $process = Get-Process -Id ([int]$record.pid) -ErrorAction SilentlyContinue
-  if ($null -eq $process) { return $null }
-  try {
-    if ([string]$record.executable -ne '__ECHOMANAGER_ADOPTED__' -and [IO.Path]::GetFullPath($process.Path) -ine [IO.Path]::GetFullPath([string]$record.executable)) { return $null }
-    if ([long]$process.StartTime.ToUniversalTime().Ticks -ne [long]$record.startedTicks) { return $null }
-  } catch { return $null }
-  return $process
-}
-%s
-$existing = Get-ManagerRecord
-if ($null -ne (Get-ManagerProcess $existing)) { throw ('此实例已在目标设备运行（PID ' + $existing.pid + '）') }
-if ($null -ne $existing) {
-  $adopted = Adopt-ManagerProcess $existing
-  if ($null -ne $adopted) { Write-Output ('__EM_STARTED__|' + $adopted.Id + '|' + $existing.startedAt); exit 0 }
-  if ($null -ne (Get-ManagerRawProcess $existing)) { throw ('远端记录的 PID ' + $existing.pid + ' 仍在运行，但身份校验失败；无法从端口 ' + $port + ' 唯一确认监听进程（已尝试 Get-NetTCPConnection 和 netstat），为避免接管错误进程或启动重复实例，未执行接管') }
-} else {
-  $adopted = Adopt-ManagerProcess ([pscustomobject]@{})
-  if ($null -ne $adopted) { $record = Get-ManagerRecord; Write-Output ('__EM_STARTED__|' + $record.pid + '|' + $record.startedAt); exit 0 }
-  if (@(Get-PortListenerOwnerIds).Count -gt 0) { throw ('配置端口 ' + $port + ' 已有监听进程，但无法唯一确认其身份；为避免启动重复实例，未执行启动') }
-}
-if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw '程序路径不存在或不是文件' }
-$launchToken = [guid]::NewGuid().ToString('N')
-$launcherScript = %s
-$launcherScript = $launcherScript.Replace('__EM_LAUNCH_TOKEN__', $launchToken)
-Set-Content -LiteralPath $launchScriptPath -Value $launcherScript -Encoding UTF8
-$powerShellPath = Join-Path $PSHOME 'powershell.exe'
-$commandLine = '"' + $powerShellPath + '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launchScriptPath + '"'
-$processClass = [WMIClass]'\\.\root\cimv2:Win32_Process'
-$creation = $processClass.Create($commandLine, $workingDirectory, $null)
-if ($creation.ReturnValue -ne 0) { throw ('无法通过 Windows Process Provider 启动独立进程（错误码 ' + $creation.ReturnValue + '）') }
-$deadline = [DateTime]::UtcNow.AddSeconds(15)
-while ([DateTime]::UtcNow -lt $deadline) {
-  if (Test-Path -LiteralPath $metaPath) {
-    $record = Get-ManagerRecord
-    if ($null -ne $record -and $record.launchToken -eq $launchToken) {
-      Remove-Item -LiteralPath $launchScriptPath -Force -ErrorAction SilentlyContinue
-      if ($record.error) { throw [string]$record.error }
-      Write-Output ('__EM_STARTED__|' + $record.pid + '|' + $record.startedAt)
-      exit 0
-    }
-  }
-  Start-Sleep -Milliseconds 100
-}
-throw '独立进程启动器未能及时回报结果；请检查目标设备远程日志'`, id, executable, port, windowsRemoteAdoptionHelpers, powershellQuote(launcherScript))
+	return fmt.Sprintf(remoteScript("remote-06.ps1"), id, executable, port, windowsRemoteAdoptionHelpers, powershellQuote(launcherScript))
 }
 
 func windowsLauncherScript(instance Instance, environmentJSON string) string {
-	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$launchToken = '__EM_LAUNCH_TOKEN__'
-$id = %s
-$exe = %s
-$workingDirectory = [IO.Path]::GetDirectoryName($exe)
-$arguments = %s
-$environment = ConvertFrom-Json -InputObject %s
-$root = Join-Path $env:USERPROFILE '.echomanager'
-$metaPath = Join-Path (Join-Path $root 'instances') ($id + '.json')
-$stdoutPath = Join-Path (Join-Path $root 'logs') ($id + '.out.log')
-$stderrPath = Join-Path (Join-Path $root 'logs') ($id + '.err.log')
-try {
-  foreach ($entry in $environment.PSObject.Properties) {
-    [Environment]::SetEnvironmentVariable($entry.Name, [string]$entry.Value, 'Process')
-  }
-  $startOptions = @{
-    FilePath = $exe
-    WorkingDirectory = $workingDirectory
-    PassThru = $true
-    WindowStyle = 'Hidden'
-    RedirectStandardOutput = $stdoutPath
-    RedirectStandardError = $stderrPath
-  }
-  if ($arguments.Length -gt 0) { $startOptions.ArgumentList = $arguments }
-  $process = Start-Process @startOptions
-  Start-Sleep -Milliseconds 150
-  $process.Refresh()
-  if ($process.HasExited) { throw '进程启动后立即退出；请查看远程日志' }
-  $started = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-  $record = [ordered]@{
-    launchToken = $launchToken
-    pid = $process.Id
-    executable = $exe
-    startedTicks = $process.StartTime.ToUniversalTime().Ticks
-    startedAt = $started
-  }
-  $temporaryPath = $metaPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-  $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
-  Move-Item -LiteralPath $temporaryPath -Destination $metaPath -Force
-} catch {
-  try { Add-Content -LiteralPath $stderrPath -Value $_.ToString() -Encoding UTF8 } catch {}
-  $record = [ordered]@{ launchToken = $launchToken; error = $_.Exception.Message }
-  $temporaryPath = $metaPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-  $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporaryPath -Encoding UTF8
-  Move-Item -LiteralPath $temporaryPath -Destination $metaPath -Force
-}`, powershellQuote(instance.ID), powershellQuote(instance.ExecutablePath), powershellQuote(joinWindowsArguments(instance.Arguments)), powershellQuote(environmentJSON))
+	return fmt.Sprintf(remoteScript("remote-07.ps1"), powershellQuote(instance.ID), powershellQuote(instance.ExecutablePath), powershellQuote(joinWindowsArguments(instance.Arguments)), powershellQuote(environmentJSON))
 }
 
 func decodePowerShellError(message string) string {
@@ -930,7 +668,7 @@ func hasRemoteMarkerLine(output, marker string) bool {
 
 func remoteStopResult(output string, commandErr error) (confirmed bool, stale bool, resultErr error) {
 	if hasRemoteMarkerLine(output, "__EM_STALE__") {
-		return false, true, errors.New("远端进程身份发生变化，且无法唯一确认配置端口的监听进程；为避免误停其他程序，未停止")
+		return false, true, errors.New(uiText("backend.remote.message020"))
 	}
 	if hasRemoteMarkerLine(output, "__EM_STOPPED__") {
 		return true, false, nil
@@ -938,17 +676,17 @@ func remoteStopResult(output string, commandErr error) (confirmed bool, stale bo
 	if commandErr != nil {
 		var exitError *ssh.ExitError
 		if errors.As(commandErr, &exitError) {
-			return false, false, fmt.Errorf("SSH 停止命令退出代码 %d，且未收到远端停止确认：%w", exitError.ExitStatus(), commandErr)
+			return false, false, fmt.Errorf(uiText("backend.remote.message021"), exitError.ExitStatus(), commandErr)
 		}
-		return false, false, fmt.Errorf("未收到远端停止确认：%w", commandErr)
+		return false, false, fmt.Errorf(uiText("backend.remote.message022"), commandErr)
 	}
-	return false, false, fmt.Errorf("目标设备未确认停止：%s", strings.TrimSpace(output))
+	return false, false, fmt.Errorf(uiText("backend.remote.message023"), strings.TrimSpace(output))
 }
 
 func parseRemoteState(output string) (remoteInstanceState, error) {
 	parts := findRemoteMarker(output, "__EM_STATE__|")
 	if len(parts) != 5 {
-		return remoteInstanceState{}, fmt.Errorf("目标设备返回了无法识别的状态报告：%s", strings.TrimSpace(output))
+		return remoteInstanceState{}, fmt.Errorf(uiText("backend.remote.message024"), strings.TrimSpace(output))
 	}
 	pid, err := strconv.Atoi(parts[2])
 	if err != nil {
@@ -968,7 +706,7 @@ func parseRemoteState(output string) (remoteInstanceState, error) {
 	case statusStopped, statusStarting, statusRunning, statusException, "stale":
 		return state, nil
 	default:
-		return remoteInstanceState{}, fmt.Errorf("目标设备返回了未知状态：%s", state.Status)
+		return remoteInstanceState{}, fmt.Errorf(uiText("backend.remote.message025"), state.Status)
 	}
 }
 
@@ -986,21 +724,21 @@ func (m *instanceManager) startRemote(id string) (resultErr error) {
 	index := m.indexLocked(id)
 	if index < 0 {
 		m.mu.Unlock()
-		return apiError{status: 404, message: "找不到此实例。"}
+		return apiError{status: 404, message: uiText("backend.remote.message026")}
 	}
 	instance := cloneInstance(m.instances[index])
 	if instance.Status == statusStarting || instance.Status == statusRunning || instance.Status == statusStopping || instance.PID > 0 {
 		m.mu.Unlock()
-		return apiError{status: 409, message: "请先刷新目标设备状态；此实例可能仍在运行。"}
+		return apiError{status: 409, message: uiText("backend.remote.message027")}
 	}
 	device, found := m.deviceLocked(instance.DeviceID)
 	if !found {
 		m.mu.Unlock()
-		return apiError{status: 409, message: "目标设备不存在；请重新选择设备。"}
+		return apiError{status: 409, message: uiText("backend.remote.message028")}
 	}
 	generation := m.nextRemoteActionGenerationLocked(id)
 	m.instances[index].Status = statusStarting
-	m.instances[index].Error = "正在通过远程管理通道启动…"
+	m.instances[index].Error = uiText("backend.remote.message029")
 	if err := m.saveLocked(); err != nil {
 		m.mu.Unlock()
 		return err
@@ -1027,7 +765,7 @@ func (m *instanceManager) startRemote(id string) (resultErr error) {
 			}
 			return apiError{status: 502, message: deviceError(err)}
 		}
-		err := fmt.Errorf("目标设备未返回启动确认：%s", strings.TrimSpace(output))
+		err := fmt.Errorf(uiText("backend.remote.message030"), strings.TrimSpace(output))
 		if !m.setRemoteStartError(id, generation, err) {
 			return nil
 		}
@@ -1057,7 +795,7 @@ func (m *instanceManager) startRemote(id string) (resultErr error) {
 	index = m.indexLocked(id)
 	if index < 0 {
 		m.mu.Unlock()
-		return apiError{status: 404, message: "启动确认后找不到此实例。"}
+		return apiError{status: 404, message: uiText("backend.remote.message031")}
 	}
 	if !m.remoteActionIsCurrentLocked(id, generation) {
 		current := cloneInstance(m.instances[index])
@@ -1084,7 +822,7 @@ func (m *instanceManager) startRemote(id string) (resultErr error) {
 	m.instances[index].ActualPort = 0
 	m.instances[index].StartedAt = time.Unix(epoch, 0).UTC().Format(time.RFC3339)
 	m.instances[index].LastExitCode = nil
-	m.instances[index].Error = "等待目标服务端口就绪…"
+	m.instances[index].Error = uiText("backend.remote.message032")
 	m.nextRemoteActionGenerationLocked(id)
 	if err := m.saveLocked(); err != nil {
 		m.mu.Unlock()
@@ -1169,7 +907,7 @@ func (m *instanceManager) stopRemote(id string) (resultErr error) {
 	index := m.indexLocked(id)
 	if index < 0 {
 		m.mu.Unlock()
-		return apiError{status: 404, message: "找不到此实例。"}
+		return apiError{status: 404, message: uiText("backend.remote.message026")}
 	}
 	instance := cloneInstance(m.instances[index])
 	if instance.PID <= 0 {
@@ -1181,28 +919,28 @@ func (m *instanceManager) stopRemote(id string) (resultErr error) {
 		index = m.indexLocked(id)
 		if index < 0 {
 			m.mu.Unlock()
-			return apiError{status: http.StatusNotFound, message: "找不到此实例。"}
+			return apiError{status: http.StatusNotFound, message: uiText("backend.remote.message026")}
 		}
 		instance = cloneInstance(m.instances[index])
 		if instance.PID <= 0 {
 			m.mu.Unlock()
 			if refreshErr != nil {
-				return apiError{status: http.StatusBadGateway, message: "无法核验远程进程，未停止任何程序：" + deviceError(refreshErr)}
+				return apiError{status: http.StatusBadGateway, message: uiText("backend.remote.message033") + deviceError(refreshErr)}
 			}
 			if instance.Error != "" {
-				return apiError{status: http.StatusBadGateway, message: "无法核验远程进程，未停止任何程序：" + instance.Error}
+				return apiError{status: http.StatusBadGateway, message: uiText("backend.remote.message033") + instance.Error}
 			}
-			return apiError{status: http.StatusConflict, message: "未发现可安全接管的唯一端口监听进程；为避免误停其他程序，未执行停止。"}
+			return apiError{status: http.StatusConflict, message: uiText("backend.remote.message034")}
 		}
 	}
 	device, found := m.deviceLocked(instance.DeviceID)
 	if !found {
 		m.mu.Unlock()
-		return apiError{status: 409, message: "目标设备不存在。"}
+		return apiError{status: 409, message: uiText("backend.remote.message035")}
 	}
 	generation := m.nextRemoteActionGenerationLocked(id)
 	m.instances[index].Status = statusStopping
-	m.instances[index].Error = "正在核验远程进程身份…"
+	m.instances[index].Error = uiText("backend.remote.message036")
 	_ = m.saveLocked()
 	m.mu.Unlock()
 
@@ -1233,12 +971,12 @@ func (m *instanceManager) stopRemote(id string) (resultErr error) {
 				stopConfirmed = true
 				verifiedStopped = true
 			} else if parseErr != nil {
-				stopErr = fmt.Errorf("%w；停止后状态复核无法解析：%v", stopErr, parseErr)
+				stopErr = fmt.Errorf(uiText("backend.remote.message037"), stopErr, parseErr)
 			} else {
-				stopErr = fmt.Errorf("%w；停止后状态复核仍为 %s（PID %d）", stopErr, remoteState.Status, remoteState.PID)
+				stopErr = fmt.Errorf(uiText("backend.remote.message038"), stopErr, remoteState.Status, remoteState.PID)
 			}
 		} else {
-			stopErr = fmt.Errorf("%w；停止后状态复核失败：%v", stopErr, verifyErr)
+			stopErr = fmt.Errorf(uiText("backend.remote.message039"), stopErr, verifyErr)
 		}
 	}
 	if stale {
@@ -1401,7 +1139,7 @@ func (m *instanceManager) refreshRemoteStates(ctx context.Context, onlyInstance 
 					m.instances[index].Status = statusException
 					m.instances[index].PID = 0
 					m.instances[index].ActualPort = 0
-					m.instances[index].Error = "远端进程身份已变化，且无法唯一确认配置端口的监听进程；未接管。请检查目标设备的端口占用。"
+					m.instances[index].Error = uiText("backend.remote.message040")
 				case statusStopped:
 					m.instances[index].Status = statusStopped
 					m.instances[index].PID = 0
@@ -1415,7 +1153,7 @@ func (m *instanceManager) refreshRemoteStates(ctx context.Context, onlyInstance 
 					m.instances[index].StartedAt = remoteState.StartedAt
 					m.instances[index].Error = ""
 					if remoteState.Status == statusException {
-						m.instances[index].Error = fmt.Sprintf("远端进程仍在运行，但端口 %d 尚未就绪。", m.instances[index].ConfiguredPort)
+						m.instances[index].Error = fmt.Sprintf(uiText("backend.remote.message041"), m.instances[index].ConfiguredPort)
 					}
 				}
 				saveErr = m.saveLocked()
@@ -1444,7 +1182,7 @@ func (m *instanceManager) setRemoteStateError(id string, cause error) {
 	defer m.mu.Unlock()
 	if index := m.indexLocked(id); index >= 0 {
 		instance := &m.instances[index]
-		instance.Error = "无法连接或核验目标设备：" + cause.Error()
+		instance.Error = uiText("backend.remote.message042") + cause.Error()
 		if instance.PID <= 0 || (instance.Status != statusStarting && instance.Status != statusRunning && instance.Status != statusStopping) {
 			instance.Status = statusException
 		}
